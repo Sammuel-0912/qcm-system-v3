@@ -3,20 +3,18 @@
 本專案為三個服務：`postgres`（資料庫）、`api`（FastAPI）、`web`（React + nginx）。
 Zeabur 會直接讀取各資料夾的 Dockerfile 來建置，不使用 docker-compose.yml。
 
-## 1. 推上 GitHub
+## 1. GitHub repo（已完成）
 
-Zeabur 從 Git repo 部署，先建立 repo：
+程式碼已推上：<https://github.com/Sammuel-0912/qcm-system>（private，分支 `main`）
+
+後續改動推上去後，Zeabur 會自動重新部署：
 
 ```bash
-git init
-git add .
-git commit -m "init"
-git branch -M main
-git remote add origin https://github.com/<你的帳號>/<repo 名稱>.git
-git push -u origin main
+git add -A && git commit -m "..." && git push
 ```
 
-> `raw_data.xlsx`（1.8MB）與圖片會一起進版控。若不想上傳，先加入 `.gitignore`。
+> `raw_data.xlsx` 已被 `.gitignore` 的 `*.xlsx` 排除，不會進版控。
+> 資料改用步驟 5 從網頁介面上傳。
 
 ## 2. 建立 Zeabur 專案與資料庫
 
