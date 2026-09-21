@@ -29,14 +29,28 @@ git add -A && git commit -m "..." && git push
 2. 建立後進入該服務 **Settings**：
    - **Service Name** 改成 `api`（重要：`web` 是靠這個名字連到後端）
    - **Root Directory** 設為 `backend`
-3. **Variables** 分頁新增：
+3. **Variables** 分頁新增 `QCM_DATABASE_URL`。
+
+   到 **PostgreSQL 服務 → Connect 分頁**，複製 **Private/Internal** 的連線字串，
+   它長得像這樣：
 
    ```
-   QCM_DATABASE_URL=postgresql+psycopg://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DATABASE}
+   postgresql://root:<密碼>@postgresql.zeabur.internal:5432/zeabur
    ```
 
-   Zeabur 支援同專案的變數引用，上面那串可以直接貼。若你的版面沒有自動帶入，
-   就從步驟 2 抄實際值填進去。
+   把開頭的 `postgresql://` 改成 `postgresql+psycopg://`，其餘照抄：
+
+   ```
+   QCM_DATABASE_URL=postgresql+psycopg://root:<密碼>@postgresql.zeabur.internal:5432/zeabur
+   ```
+
+   > ⚠️ **請填實際值，不要用 `${POSTGRES_PORT}` 這類變數參照。**
+   > Zeabur 不一定會代換，會把字串原樣傳進來，導致 api 啟動時噴
+   > `ValueError: invalid literal for int() with base 10: '${POSTGRES_PORT}'`
+   > 並進入 CrashLoopBackOff。
+   >
+   > ⚠️ `postgresql+psycopg://` 的 `+psycopg` 不能省略，SQLAlchemy 需要指定 driver。
+
 4. Redeploy，看 Logs 出現 `Application startup complete.` 即成功。
 
 > api 不需要對外網域。它只透過內網被 `web` 呼叫。
