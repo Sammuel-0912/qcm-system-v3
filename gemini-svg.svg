@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 550" width="100%" height="100%" style="background-color: #ffffff; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;">
+  <style>
+    .axis-line { stroke: #333333; stroke-width: 2; }
+    .axis-arrow { fill: #333333; }
+    .title-text { font-size: 22px; font-weight: bold; fill: #111111; }
+    .level-title { font-size: 18px; font-weight: bold; fill: #222222; }
+    .axis-label { font-size: 18px; font-weight: bold; fill: #333333; }
+    .content-text { font-size: 16px; fill: #222222; font-weight: 500; }
+    .sub-label { font-size: 15px; fill: #444444; }
+    .corner-num { font-size: 14px; fill: #333333; font-weight: bold; }
+  </style>
+
+  <!-- 標題 -->
+  <text x="120" y="45" class="title-text">品质管控力</text>
+
+  <!-- 圖表背景四象限 -->
+  <!-- 右上: Level 0 (#BFFFDA) -->
+  <rect x="360" y="100" width="220" height="150" fill="#BFFFDA" />
+  <!-- 右下: Level 1 (#C5E9FF) -->
+  <rect x="360" y="250" width="220" height="150" fill="#C5E9FF" />
+  <!-- 左上: Level 2 (#F3EA95) -->
+  <rect x="140" y="100" width="220" height="150" fill="#F3EA95" />
+  <!-- 左下: Level 3 (#FFCCFF) -->
+  <rect x="140" y="250" width="220" height="150" fill="#FFCCFF" />
+
+  <!-- Level 標籤 -->
+  <text x="140" y="85" class="level-title">Level 2</text>
+  <text x="520" y="85" class="level-title">Level 0</text>
+  <text x="140" y="430" class="level-title">Level 3</text>
+  <text x="520" y="430" class="level-title">Level 1</text>
+
+  <!-- 象限文字內容 -->
+  <!-- 左上 (Level 2) -->
+  <text x="160" y="145" class="content-text">y 人检/机测(未证实可靠)</text>
+  <text x="210" y="185" class="content-text">Y 100%机测</text>
+
+  <!-- 右上 (Level 0) -->
+  <text x="415" y="145" class="content-text">y 100%机测</text>
+  <text x="415" y="185" class="content-text">Y 100%机测</text>
+
+  <!-- 左下 (Level 3) -->
+  <text x="150" y="295" class="content-text">y 人检/机测(未证实可靠)</text>
+  <text x="150" y="335" class="content-text">Y 人检/机测(未证实可靠)</text>
+
+  <!-- 右下 (Level 1) -->
+  <text x="430" y="295" class="content-text">y 100%机测</text>
+  <text x="380" y="335" class="content-text">Y 人检/机测(未证实可靠)</text>
+
+  <!-- 象限角落數字 -->
+  <text x="343" y="118" class="corner-num">1</text>
+  <text x="160" y="240" class="corner-num">10</text>
+  <text x="343" y="240" class="corner-num">6</text>
+  <text x="370" y="230" class="corner-num">5</text>
+  <text x="560" y="240" class="corner-num">1</text>
+  <text x="340" y="385" class="corner-num">10</text>
+
+  <!-- 坐標軸：縱軸 Y (中軸線) -->
+  <line x1="360" y1="410" x2="360" y2="70" class="axis-line" />
+  <polygon points="360,60 354,72 366,72" class="axis-arrow" />
+  <text x="335" y="75" class="axis-label">Y</text>
+  <text x="370" y="75" class="axis-label">高</text>
+  <text x="350" y="440" class="axis-label">低</text>
+  <text x="310" y="465" class="sub-label">依侦测度评分</text>
+
+  <!-- 坐標軸：橫軸 y (中軸線) -->
+  <line x1="120" y1="250" x2="620" y2="250" class="axis-line" />
+  <polygon points="630,250 618,244 618,256" class="axis-arrow" />
+  <text x="110" y="245" class="axis-label">低</text>
+  <text x="615" y="225" class="axis-label">y</text>
+  <text x="615" y="260" class="axis-label">高</text>
+</svg>

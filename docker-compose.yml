@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: qcm
+      POSTGRES_USER: qcm
+      POSTGRES_PASSWORD: qcm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qcm"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      QCM_DATABASE_URL: postgresql+psycopg://qcm:qcm@db:5432/qcm
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ./frontend
+    environment:
+      PORT: 80
+      API_URL: http://api:8000
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
