@@ -27,7 +27,7 @@ git add -A && git commit -m "..." && git push
 
 1. **Add Service → Git → 選你的 repo**。
 2. 建立後進入該服務 **Settings**：
-   - **Service Name** 改成 `api`（重要：`web` 是靠這個名字連到後端）
+   - **Service Name** 設為 `api`（方便辨識；注意這**不等於**內網主機名，見步驟 5）
    - **Root Directory** 設為 `backend`
 3. **Variables** 分頁新增 `QCM_DATABASE_URL`。
 
@@ -53,10 +53,20 @@ git add -A && git commit -m "..." && git push
    >
    > ⚠️ `postgresql+psycopg://` 的 `+psycopg` 不能省略，SQLAlchemy 需要指定 driver。
 
-4. Redeploy，看 Logs 出現 `Application startup complete.` 即成功。
+4. **Variables** 再加一條 `PORT=8000`。
 
-> api 不需要對外網域。它只透過內網被 `web` 呼叫。
-> 若你想單獨測 API，可在 **Networking** 開一個網域後打 `/health`。
+   Zeabur 會自行注入 `PORT`，明確釘死可確保與 `web` 的 `API_URL` port 一致。
+
+5. 記下內網主機名：**Networking 分頁 → Private Domain**，形如 `xxxx.zeabur.internal`。
+
+   > ⚠️ Zeabur 文件註明「**改服務名稱不會改變 private hostname**」，
+   > 主機名在服務建立時就固定了。**請抄 Networking 顯示的實際值**，
+   > 不要假設它等於你設定的 Service Name。
+
+6. Redeploy，看 Logs 出現 `Application startup complete.` 即成功。
+
+> api **不需要**開對外網域（Public Networking）。內網通訊是給同專案服務互連用的，
+> 不開對外反而更安全。若想單獨測 API，再臨時開一個網域打 `/health` 即可。
 
 ## 4. 部署 web 服務
 
@@ -64,13 +74,14 @@ git add -A && git commit -m "..." && git push
 2. **Settings**：
    - **Service Name** 設為 `web`
    - **Root Directory** 設為 `frontend`
-3. **Variables** 新增：
+3. **Variables** 新增。`<api的private domain>` 換成步驟 3-5 抄來的完整值
+   （已含 `.zeabur.internal` 結尾，不要重複加）：
 
    ```
-   API_URL=http://api.zeabur.internal:8000
+   API_URL=http://<api的private domain>:8000
    ```
 
-   （若你把後端服務取名成別的，把 `api` 換成那個名字。）
+   port 用 `8000`，對應 api 服務釘死的 `PORT=8000`。
 4. **Networking → Generate Domain**，產生對外網址。
 
 ## 5. 匯入資料
