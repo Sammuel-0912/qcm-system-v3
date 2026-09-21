@@ -20,8 +20,8 @@ git add -A && git commit -m "..." && git push
 
 1. 登入 <https://zeabur.com> → **Create Project**（區域建議選 `Tokyo` 或 `Hong Kong`）。
 2. **Add Service → Prebuilt → PostgreSQL**，等它 Running。
-3. 點 PostgreSQL 服務 → **Connect** 分頁，記下內網連線資訊
-   （`POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USERNAME` / `POSTGRES_PASSWORD` / `POSTGRES_DATABASE`）。
+3. 點 PostgreSQL 服務 → **Instruction** 分頁，記下 root 帳號、密碼與預設資料庫名稱。
+   內網主機名與 port 在 **Networking** 分頁（`xxx.zeabur.internal`）。
 
 ## 3. 部署 api 服務
 
@@ -31,8 +31,9 @@ git add -A && git commit -m "..." && git push
    - **Root Directory** 設為 `backend`
 3. **Variables** 分頁新增 `QCM_DATABASE_URL`。
 
-   到 **PostgreSQL 服務 → Connect 分頁**，複製 **Private/Internal** 的連線字串，
-   它長得像這樣：
+   到 **PostgreSQL 服務 → Instruction 分頁**（不是 Connect，Zeabur 沒有這個分頁），
+   裡面有 root 帳號、密碼、預設資料庫與連線字串。內網主機名與 port 則在
+   **Networking 分頁**，長得像 `xxx.zeabur.internal`。組起來像這樣：
 
    ```
    postgresql://root:<密碼>@postgresql.zeabur.internal:5432/zeabur
@@ -45,7 +46,8 @@ git add -A && git commit -m "..." && git push
    ```
 
    > ⚠️ **請填實際值，不要用 `${POSTGRES_PORT}` 這類變數參照。**
-   > Zeabur 不一定會代換，會把字串原樣傳進來，導致 api 啟動時噴
+   > Zeabur 的跨服務參照要求來源服務有 Expose 該變數才會代換，
+   > 對不上時會把字串原樣傳進來，導致 api 啟動時噴
    > `ValueError: invalid literal for int() with base 10: '${POSTGRES_PORT}'`
    > 並進入 CrashLoopBackOff。
    >
