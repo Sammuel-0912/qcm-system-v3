@@ -4,6 +4,7 @@ server {
 
     # Zeabur 內網 DNS：由 entrypoint 從 /etc/resolv.conf 取得
     resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
+    resolver_timeout 5s;
 
     location / {
         root /usr/share/nginx/html;
