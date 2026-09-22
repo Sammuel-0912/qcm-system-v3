@@ -18,9 +18,17 @@ server {
         set $api_upstream ${API_URL};
         proxy_pass $api_upstream;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+
+        # Host 用後端自己的主機名（由 entrypoint 從 API_URL 取出），不是前端的網域。
+        # API_URL 指向對外 https 網址時，邊緣路由要靠這個 header 才找得到服務。
+        proxy_set_header Host ${API_HOST};
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # API_URL 為 https 時，交握需要 SNI 與正確的憑證驗證主機名
+        proxy_ssl_server_name on;
+        proxy_ssl_name ${API_HOST};
+
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
