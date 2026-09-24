@@ -13,9 +13,9 @@ import {
 import type { BarResponse } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
 
-type Props = { data: BarResponse; view: string; onSelect: (level: number) => void }
+type Props = { data: BarResponse; view: string; onSelect: (level: number) => void; scopeLabel?: string }
 
-export function LevelBarChart({ data, view, onSelect }: Props) {
+export function LevelBarChart({ data, view, onSelect, scopeLabel }: Props) {
   // 四根柱固定存在，數量為 0 也保留柱位（spec.md REQ-UI-10）
   const rows = data.bars.map((bar) => ({
     name: `Level ${bar.level}`,
@@ -52,6 +52,21 @@ export function LevelBarChart({ data, view, onSelect }: Props) {
           </text>
         )}
       </g>
+    )
+  }
+
+  // 全部為 0 時要明說原因。只畫空座標軸會被誤判成「圖表壞了」。
+  const isEmpty = rows.every((r) => r.count === 0) && data.unrated === 0
+  if (isEmpty) {
+    return (
+      <div className="flex h-[320px] flex-col items-center justify-center rounded-md border border-dashed border-slate-200 text-center">
+        <p className="text-sm text-slate-500">
+          {scopeLabel ? `「${scopeLabel}」` : '此範圍'}沒有 KPOV 資料
+        </p>
+        <p className="mt-1 max-w-sm text-xs text-slate-400">
+          可能是這個站別尚未建立 KPOV，或目前匯入的批次不含此站別的資料。
+        </p>
+      </div>
     )
   }
 

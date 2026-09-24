@@ -299,7 +299,14 @@ export default function App() {
                 {bar ? ` · 共 ${bar.total} 項` : ''}
               </span>
             </h2>
-            {bar && <LevelBarChart data={bar} view={state.view} onSelect={setSelectedLevel} />}
+            {bar && (
+              <LevelBarChart
+                data={bar}
+                view={state.view}
+                onSelect={setSelectedLevel}
+                scopeLabel={scopeLabel}
+              />
+            )}
           </div>
         </section>
       </main>

@@ -27,8 +27,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
 
 def init_db() -> None:
     from . import models  # noqa: F401  確保模型已註冊
+    from .migrations import ensure_schema
 
     Base.metadata.create_all(engine)
+    # create_all 只建立不存在的表，不會修改既有表；既有資料庫的結構變更走這裡
+    ensure_schema(engine)
 
 
 def get_session() -> Iterator[Session]:
