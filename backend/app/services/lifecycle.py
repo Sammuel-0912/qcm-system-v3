@@ -36,6 +36,18 @@ class KpovState:
     def deviates_from_baseline(self) -> bool:
         return self.last_event is not None and self.level_current != self.level_baseline
 
+    @property
+    def target_id(self) -> str:
+        """Layout 熱區/選取目標的識別字串。
+
+        CTP 站綁設備代碼（`equip:OT00420105`），因為 KPOV 庫的站別名稱與現場實際
+        不完全相符，設備代碼才是穩定的唯一權威。
+        OP 站沒有設備，只能綁站別（`op:鎖後蓋`）。
+        """
+        if self.kpov.equipment_code:
+            return f"equip:{self.kpov.equipment_code}"
+        return f"op:{self.kpov.station}"
+
     def level_for(self, view: str) -> int | None:
         if view == VIEW_BASELINE:
             return self.level_baseline

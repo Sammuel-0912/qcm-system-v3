@@ -15,6 +15,7 @@ export type LineInheritance = {
   inherited: boolean
   inheritedFrom: string | null
   inheritedStations: string[]
+  opExemptFromLineFilter?: boolean
 }
 
 export type QuadrantResponse = {
@@ -31,18 +32,47 @@ export type QuadrantResponse = {
 export type BarResponse = {
   bars: { level: number; count: number; baselineCount: number; color: string }[]
   unrated: number
+  total: number
+}
+
+export type StationOption = {
+  attribute: string
+  code: string
+  equipmentCode: string | null
+  targetId: string
+  kpovCount: number
+  worstLevel: number | null
+  levelCounts: Record<string, number>
 }
 
 export type FiltersResponse = {
-  stations: { code: string; equipmentCode: string; kpovCount: number }[]
+  stations: StationOption[]
+  attributes: string[]
   lines: { code: string; label: string }[]
   batch: BatchInfo
+}
+
+export type TrendPoint = {
+  period: string
+  escalated: number
+  improved: number
+  escalatedCumulative: number
+  improvedCumulative: number
+}
+
+export type TrendResponse = {
+  granularity: string
+  points: TrendPoint[]
+  totals: { escalated: number; improved: number }
+  emptyReason: string | null
 }
 
 export type KpovItem = {
   kpovNo: string | null
   kpovName: string
   station: string
+  attribute: string | null
+  targetId: string
   category: string | null
   equipmentCode: string
   smallYBaseline: number | null
@@ -119,15 +149,18 @@ async function get<T>(path: string, params: Record<string, string | undefined> =
   return res.json() as Promise<T>
 }
 
+type Scope = { station?: string; line?: string; attribute?: string; target?: string }
+
 export const api = {
   filters: () => get<FiltersResponse>('/filters'),
-  quadrant: (p: { view: string; station?: string; line?: string }) => get<QuadrantResponse>('/quadrant', p),
-  bar: (p: { view: string; station?: string; line?: string }) => get<BarResponse>('/levels/bar', p),
-  kpov: (p: { view: string; station?: string; line?: string; level?: string; deviatedOnly?: string }) =>
+  quadrant: (p: Scope & { view: string }) => get<QuadrantResponse>('/quadrant', p),
+  bar: (p: Scope & { view: string }) => get<BarResponse>('/levels/bar', p),
+  trend: (p: Scope) => get<TrendResponse>('/trend', p),
+  kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string }) =>
     get<{ total: number; items: KpovItem[] }>('/kpov', p),
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
-  events: (p: { station?: string; line?: string }) => get<EventsResponse>('/events', p),
+  events: (p: Scope) => get<EventsResponse>('/events', p),
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

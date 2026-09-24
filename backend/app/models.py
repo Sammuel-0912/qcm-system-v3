@@ -93,8 +93,12 @@ class FactKpov(Base):
 
     __tablename__ = "fact_kpov"
     __table_args__ = (
-        UniqueConstraint("batch_id", "kpov_no", "equipment_code", name="uq_kpov_equipment"),
-        Index("ix_kpov_station_level", "batch_id", "station", "level_baseline"),
+        # OP 站沒有設備代碼，且 KPOV 編號會跨站重複（K00001 同時出現在 OP 鎖後蓋與 CTP 各站），
+        # 站別本身也不唯一（「鎖銅排」同時是 CTP 站與 OP 站），
+        # 因此唯一鍵必須是 屬性1 + 站別 + KPOV 編號。
+        UniqueConstraint("batch_id", "attribute1", "station", "kpov_no", name="uq_kpov_identity"),
+        Index("ix_kpov_station_level", "batch_id", "attribute1", "station", "level_baseline"),
+        Index("ix_kpov_equipment", "batch_id", "equipment_code"),
     )
 
     id: Mapped[int] = _pk()
@@ -112,7 +116,7 @@ class FactKpov(Base):
     kpov_name: Mapped[str] = mapped_column(Text, nullable=False)
     kpov_no: Mapped[str | None] = mapped_column(Text)
     alarm_code: Mapped[str | None] = mapped_column(Text)
-    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    equipment_code: Mapped[str | None] = mapped_column(Text)  # OP 站無設備
     small_y_score: Mapped[int | None] = mapped_column(SmallInteger)
     big_y_score: Mapped[int | None] = mapped_column(SmallInteger)
     cc_sc_reason: Mapped[str | None] = mapped_column(Text)
