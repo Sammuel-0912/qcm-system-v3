@@ -11,10 +11,16 @@ from sqlalchemy.orm import Session
 
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
-from ...models import DimEquipment, FactLevelEvent, ImportBatch
+from ...models import DimEquipment, FactLevelEvent, FactRepair, ImportBatch
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
-from ...services.query import active_batch, bar_payload, quadrant_payload, apply_filters
+from ...services.query import (
+    active_batch,
+    apply_filters,
+    bar_payload,
+    quadrant_payload,
+    trend_payload,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -45,12 +51,29 @@ def get_filters(session: Session = Depends(get_session)):
     batch = _batch_or_404(session)
     states = build_states(session, batch.id)
 
-    stations: dict[str, dict] = {}
+    # 站別不再唯一（「鎖銅排」同時是 CTP 站與 OP 站），因此以 屬性1+站別 為鍵
+    stations: dict[tuple[str, str], dict] = {}
     for state in states:
+        attribute = state.kpov.attribute1 or "UNKNOWN"
         entry = stations.setdefault(
-            state.kpov.station, {"code": state.kpov.station, "equipmentCode": state.kpov.equipment_code, "kpovCount": 0}
+            (attribute, state.kpov.station),
+            {
+                "attribute": attribute,
+                "code": state.kpov.station,
+                "equipmentCode": state.kpov.equipment_code,
+                "targetId": state.target_id,
+                "kpovCount": 0,
+                "worstLevel": None,
+                "levelCounts": {str(i): 0 for i in range(4)},
+            },
         )
         entry["kpovCount"] += 1
+        level = state.level_current
+        if level is not None:
+            entry["levelCounts"][str(level)] += 1
+            # 最嚴重等級（依 §2.6 排序 0<1<2<3），供 layout 熱區上色
+            if entry["worstLevel"] is None or level > entry["worstLevel"]:
+                entry["worstLevel"] = level
 
     lines = sorted(
         {
@@ -60,7 +83,8 @@ def get_filters(session: Session = Depends(get_session)):
         }
     )
     return {
-        "stations": sorted(stations.values(), key=lambda s: s["code"]),
+        "stations": sorted(stations.values(), key=lambda s: (s["attribute"], s["code"])),
+        "attributes": sorted({s.kpov.attribute1 or "UNKNOWN" for s in states}),
         "lines": [{"code": line, "label": line} for line in lines],
         "batch": _batch_info(batch),
         "levelMeta": [
@@ -74,12 +98,14 @@ def get_quadrant(
     view: str = Query("current"),
     station: str | None = None,
     line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
     session: Session = Depends(get_session),
 ):
     _check_view(view)
     batch = _batch_or_404(session)
     states = build_states(session, batch.id)
-    payload = quadrant_payload(session, batch.id, states, station, line, view)
+    payload = quadrant_payload(session, batch.id, states, station, line, view, attribute, target)
     payload["batch"] = _batch_info(batch)
     return payload
 
@@ -89,12 +115,28 @@ def get_bar(
     view: str = Query("current"),
     station: str | None = None,
     line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
     session: Session = Depends(get_session),
 ):
     _check_view(view)
     batch = _batch_or_404(session)
     states = build_states(session, batch.id)
-    return bar_payload(session, batch.id, states, station, line, view)
+    return bar_payload(session, batch.id, states, station, line, view, attribute, target)
+
+
+@router.get("/trend")
+def get_trend(
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
+    granularity: str = Query("month", pattern="^(month|week)$"),
+    session: Session = Depends(get_session),
+):
+    batch = _batch_or_404(session)
+    states = build_states(session, batch.id)
+    return trend_payload(session, batch.id, states, station, line, attribute, target, granularity)
 
 
 @router.get("/kpov")
@@ -102,6 +144,8 @@ def list_kpov(
     view: str = Query("current"),
     station: str | None = None,
     line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
     level: int | None = None,
     deviated_only: bool = Query(False, alias="deviatedOnly"),
     page: int = 1,
@@ -111,7 +155,7 @@ def list_kpov(
     _check_view(view)
     batch = _batch_or_404(session)
     states = build_states(session, batch.id)
-    scoped, _ = apply_filters(session, batch.id, states, station, line)
+    scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
 
     if level is not None:
         scoped = [s for s in scoped if s.level_for(view) == level]
@@ -132,6 +176,8 @@ def list_kpov(
                 "kpovNo": s.kpov.kpov_no,
                 "kpovName": s.kpov.kpov_name,
                 "station": s.kpov.station,
+                "attribute": s.kpov.attribute1,
+                "targetId": s.target_id,
                 "category": s.kpov.category,
                 "equipmentCode": s.kpov.equipment_code,
                 "smallYBaseline": s.kpov.small_y_score,
@@ -162,11 +208,39 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
     if match is None:
         raise HTTPException(status_code=404, detail="找不到該 KPOV × 設備組合")
 
+    # 惡化節點的 tooltip 需要維修紀錄的敘述欄位。fact_level_event 只存了
+    # 「不良描述」（來源三筆全是 NO ERROR CODE，沒有資訊量），因此這裡以
+    # repair_id 回查 fact_repair，不另外複製欄位進帳本。
+    repair_ids = {e.repair_id for e in match.events if e.repair_id}
+    repairs: dict[int, FactRepair] = {}
+    if repair_ids:
+        repairs = {
+            r.id: r
+            for r in session.scalars(select(FactRepair).where(FactRepair.id.in_(repair_ids)))
+        }
+
+    def repair_detail(event: FactLevelEvent) -> dict | None:
+        repair = repairs.get(event.repair_id) if event.repair_id else None
+        if repair is None:
+            return None
+        return {
+            "serialNo": repair.serial_no,
+            "productDefectDesc": repair.product_defect_desc,
+            "subCategory": repair.sub_category,
+            "defectCause": repair.defect_cause,
+            "countermeasure": repair.countermeasure,
+            "remark": repair.remark,
+            "technician": repair.technician,
+            "improvement": repair.improvement,
+        }
+
     return {
         "kpovNo": match.kpov.kpov_no,
         "kpovName": match.kpov.kpov_name,
         "equipmentCode": match.kpov.equipment_code,
         "station": match.kpov.station,
+        "attribute": match.kpov.attribute1,
+        "targetId": match.target_id,
         "baseline": {
             "smallY": {"method": None, "score": match.kpov.small_y_score},
             "bigY": {"method": None, "score": match.kpov.big_y_score},
@@ -186,6 +260,7 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
                 "defectDesc": e.defect_desc,
                 "improvement": e.improvement,
                 "repairSerial": e.repair_serial,
+                "repair": repair_detail(e),
             }
             for e in match.events
         ],
@@ -198,13 +273,15 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
 def list_events(
     station: str | None = None,
     line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
     transition: str | None = None,
     limit: int = Query(50, le=500),
     session: Session = Depends(get_session),
 ):
     batch = _batch_or_404(session)
     states = build_states(session, batch.id)
-    scoped, _ = apply_filters(session, batch.id, states, station, line)
+    scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code) for s in scoped}
     names = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in states}
 

@@ -320,15 +320,23 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     idx, rows, _ = _read_table(kpov_sheet, M.KPOV_COLUMNS, M.KPOV_REQUIRED, "kpov")
     kpov_count = 0
     seen_kpov: set[tuple[str, str]] = set()
+    op_count = 0
     for row_no, row in enumerate(rows, start=2):
         data = _row_to_dict(row, idx)
-        if not data.get("station") or not data.get("equipment_code"):
+        # OP 站沒有設備代碼，只要有站別就是有效列——不可用 equipment_code 當存在性判斷，
+        # 否則 23 筆 OP 會被靜默丟棄。
+        if not data.get("station"):
             continue
-        key = (data.get("kpov_no") or "", data["equipment_code"])
+        attribute1 = data.get("attribute1") or "UNKNOWN"
+        key = (attribute1, data["station"], data.get("kpov_no") or "")
         if key in seen_kpov:
-            report.warnings.append(f"KPOV 第 {row_no} 列重複（編號 {key[0]} × 設備 {key[1]}），已略過")
+            report.warnings.append(
+                f"KPOV 第 {row_no} 列重複（{attribute1} · {key[1]} · 編號 {key[2]}），已略過"
+            )
             continue
         seen_kpov.add(key)
+        if attribute1 == "OP":
+            op_count += 1
 
         level = compute_level(data.get("small_y_score"), data.get("big_y_score"))
         source = data.get("level_source")
@@ -350,14 +358,17 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                         "computedLevel": expected,
                     }
                 )
-        if data["equipment_code"] not in equipment_codes:
+        equipment_code = data.get("equipment_code")
+        if equipment_code and equipment_code not in equipment_codes:
             report.unmatched_keys.append(
-                {"table": "fact_kpov", "row": row_no, "equipmentCode": data["equipment_code"]}
+                {"table": "fact_kpov", "row": row_no, "equipmentCode": equipment_code}
             )
 
         session.add(FactKpov(batch_id=batch.id, level_baseline=level, level_mismatch=mismatch, **data))
         kpov_count += 1
     report.row_counts["kpov"] = kpov_count
+    report.row_counts["kpovOp"] = op_count
+    report.row_counts["kpovCtp"] = kpov_count - op_count
 
     # 5) 告警明細
     alarm_sheet = _find_sheet(workbook, "alarm")
