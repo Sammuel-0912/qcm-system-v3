@@ -169,12 +169,17 @@ export function LevelTimeline({ data }: Props) {
         {events.map((event, idx) => {
           const isDegrade = event.type === 'DEGRADE'
           const repair = event.repair
+          // 區分兩種「沒東西」：後端沒帶回維修紀錄（多半是後端未更新或未重啟），
+          // 與維修紀錄本身欄位空白。混為一談的話，出問題時只能靠猜。
+          const missing = repair === null || repair === undefined
+          const field = (value: string | null | undefined) =>
+            missing ? '（後端未提供維修明細，請確認後端已更新並重啟）' : value || '（未填寫）'
           const lines = isDegrade
             ? [
-                { term: '產品不良描述', value: repair?.productDefectDesc ?? '（無）' },
-                { term: '維修備註', value: repair?.remark ?? '（無）' },
+                { term: '產品不良描述', value: field(repair?.productDefectDesc) },
+                { term: '維修備註', value: field(repair?.remark) },
               ]
-            : [{ term: '改善措施', value: event.improvement ?? repair?.improvement ?? '（無）' }]
+            : [{ term: '改善措施', value: event.improvement || field(repair?.improvement) }]
 
           return (
             <li key={`${event.repairSerial}-${event.type}-${idx}`} className="relative">
