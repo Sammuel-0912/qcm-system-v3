@@ -109,11 +109,24 @@ export type EventsResponse = {
   items: EventItem[]
 }
 
+export type RepairDetail = {
+  serialNo: string | null
+  productDefectDesc: string | null
+  subCategory: string | null
+  defectCause: string | null
+  countermeasure: string | null
+  remark: string | null
+  technician: string | null
+  improvement: string | null
+}
+
 export type HistoryResponse = {
   kpovNo: string
   kpovName: string
-  equipmentCode: string
+  equipmentCode: string | null
   station: string
+  attribute: string | null
+  targetId: string
   baseline: { smallY: { score: number | null }; bigY: { score: number | null }; level: number | null }
   events: {
     type: 'DEGRADE' | 'IMPROVE'
@@ -128,6 +141,7 @@ export type HistoryResponse = {
     defectDesc: string | null
     improvement: string | null
     repairSerial: string | null
+    repair: RepairDetail | null
   }[]
   current: { level: number | null }
   target: { level: number | null }

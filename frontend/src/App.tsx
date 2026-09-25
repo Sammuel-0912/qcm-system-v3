@@ -179,7 +179,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
-          <h1 className="text-xl font-semibold">品質管控力</h1>
+          <h1 className="text-xl font-semibold">WJ1 DCS 品控力監督看板</h1>
           <div className="ml-auto flex items-center gap-2">
             <span className="text-xs text-slate-500">口徑</span>
             <div className="flex rounded-md border border-slate-300 p-0.5">

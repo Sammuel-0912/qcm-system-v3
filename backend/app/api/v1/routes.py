@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
-from ...models import DimEquipment, FactLevelEvent, ImportBatch
+from ...models import DimEquipment, FactLevelEvent, FactRepair, ImportBatch
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
@@ -208,11 +208,39 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
     if match is None:
         raise HTTPException(status_code=404, detail="找不到該 KPOV × 設備組合")
 
+    # 惡化節點的 tooltip 需要維修紀錄的敘述欄位。fact_level_event 只存了
+    # 「不良描述」（來源三筆全是 NO ERROR CODE，沒有資訊量），因此這裡以
+    # repair_id 回查 fact_repair，不另外複製欄位進帳本。
+    repair_ids = {e.repair_id for e in match.events if e.repair_id}
+    repairs: dict[int, FactRepair] = {}
+    if repair_ids:
+        repairs = {
+            r.id: r
+            for r in session.scalars(select(FactRepair).where(FactRepair.id.in_(repair_ids)))
+        }
+
+    def repair_detail(event: FactLevelEvent) -> dict | None:
+        repair = repairs.get(event.repair_id) if event.repair_id else None
+        if repair is None:
+            return None
+        return {
+            "serialNo": repair.serial_no,
+            "productDefectDesc": repair.product_defect_desc,
+            "subCategory": repair.sub_category,
+            "defectCause": repair.defect_cause,
+            "countermeasure": repair.countermeasure,
+            "remark": repair.remark,
+            "technician": repair.technician,
+            "improvement": repair.improvement,
+        }
+
     return {
         "kpovNo": match.kpov.kpov_no,
         "kpovName": match.kpov.kpov_name,
         "equipmentCode": match.kpov.equipment_code,
         "station": match.kpov.station,
+        "attribute": match.kpov.attribute1,
+        "targetId": match.target_id,
         "baseline": {
             "smallY": {"method": None, "score": match.kpov.small_y_score},
             "bigY": {"method": None, "score": match.kpov.big_y_score},
@@ -232,6 +260,7 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
                 "defectDesc": e.defect_desc,
                 "improvement": e.improvement,
                 "repairSerial": e.repair_serial,
+                "repair": repair_detail(e),
             }
             for e in match.events
         ],
