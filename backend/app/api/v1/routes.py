@@ -327,7 +327,10 @@ def list_events(
 
 
 @router.post("/import")
-async def do_import(file: UploadFile = File(...), session: Session = Depends(get_session)):
+def do_import(file: UploadFile = File(...), session: Session = Depends(get_session)):
+    # 刻意用 def 而非 async def：內部的檔案寫入、openpyxl 解析與 DB 寫入全是同步且
+    # 耗時的工作。宣告成 async def 會讓它直接跑在 event loop 上，匯入期間整個程序
+    # 無法接受新連線，反向代理會出現 connect timeout。用 def 交給 threadpool 執行。
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="請上傳 .xlsx 檔案")
 
