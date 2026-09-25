@@ -83,7 +83,7 @@ def get_filters(session: Session = Depends(get_session)):
         }
     )
     return {
-        "stations": sorted(stations.values(), key=lambda s: (s["attribute"], s["code"])),
+        "stations": sorted(stations.values(), key=lambda s: (s["attribute"] or "", s["code"] or "")),
         "attributes": sorted({s.kpov.attribute1 or "UNKNOWN" for s in states}),
         "lines": [{"code": line, "label": line} for line in lines],
         "batch": _batch_info(batch),
@@ -162,7 +162,9 @@ def list_kpov(
     if deviated_only:
         scoped = [s for s in scoped if s.deviates_from_baseline]
 
-    scoped.sort(key=lambda s: (s.kpov.station, s.kpov.kpov_no or "", s.kpov.equipment_code))
+    # 三個欄位都要防 None：OP 站的 equipment_code 為空，部分列的 station 也可能缺，
+    # 混入 None 會讓 sort 在比對時丟 TypeError。
+    scoped.sort(key=lambda s: (s.kpov.station or "", s.kpov.kpov_no or "", s.kpov.equipment_code or ""))
     total = len(scoped)
     start = (page - 1) * page_size
     window = scoped[start : start + page_size]

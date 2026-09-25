@@ -15,6 +15,13 @@ def active_batch(session: Session) -> ImportBatch | None:
     ).first()
 
 
+def _sort_key(value: str | None) -> str:
+    """排序鍵：站別、線別等欄位可能為 None（OP 站無設備碼、來源資料缺漏），
+    直接排序會在 None 與 str 比對時丟 TypeError，統一視為空字串排在最前。
+    """
+    return value or ""
+
+
 def _split(value: str | None) -> list[str]:
     if not value:
         return []
@@ -83,7 +90,8 @@ def apply_filters(
                     for s in states
                     if s.kpov.equipment_code in equipment
                     and equipment[s.kpov.equipment_code].equipment_desc in equip_descs
-                }
+                },
+                key=_sort_key,
             )
             if inherited_stations:
                 source_lines = sorted(
@@ -93,7 +101,8 @@ def apply_filters(
                         if s.kpov.station in set(inherited_stations)
                         and s.kpov.equipment_code in equipment
                         and equipment[s.kpov.equipment_code].line not in line_set
-                    }
+                    },
+                    key=_sort_key,
                 )
                 selected = [s for s in selected if s.kpov.station in set(inherited_stations)]
                 meta = {
@@ -104,7 +113,7 @@ def apply_filters(
             else:
                 selected = []
         if not meta["inherited"] and stations_on_line:
-            meta["inheritedStations"] = sorted(stations_on_line)
+            meta["inheritedStations"] = sorted(stations_on_line, key=_sort_key)
 
         # OP 站與線別無關，併回結果
         selected = selected + op_states
