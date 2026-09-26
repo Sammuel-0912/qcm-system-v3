@@ -14,6 +14,8 @@
 //   'guess'     = 我依標註圖推測的位置，需要現場確認
 // ---------------------------------------------------------------------------
 
+import layoutImage from './assets/pm1-layout.jpg'
+
 export type Hotspot = {
   targetId: string
   displayName: string
@@ -25,7 +27,12 @@ export type Hotspot = {
   note?: string
 }
 
-export const LAYOUT_IMAGE = '/pm1-layout.jpg'
+// 必須用 import，不能寫成路徑字串：Vite 只處理 import 進來的資源，
+// 純字串它不會解析 —— dev 下會變成相對於當前網址的路徑，build 後
+// dist/ 裡也沒有 src/ 目錄，兩邊都會 404。
+// 走 import 另有一個好處：產出檔名帶內容 hash，換圖後 URL 自動改變，
+// 不會被瀏覽器或 CDN 的舊快取擋住。
+export const LAYOUT_IMAGE = layoutImage
 /** 背景圖原始尺寸，用來維持長寬比 */
 export const LAYOUT_ASPECT = { width: 3822, height: 1120 }
 
