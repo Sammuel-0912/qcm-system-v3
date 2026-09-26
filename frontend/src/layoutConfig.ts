@@ -13,6 +13,12 @@
 //   'confirmed' = 名稱與位置都對得上，可直接用
 //   'guess'     = 我依標註圖推測的位置，需要現場確認
 // ---------------------------------------------------------------------------
+//
+// 背景圖刻意用 import 而非放在 public/：public/ 的檔案會原樣複製、檔名不帶 hash，
+// 換圖後 URL 不變，瀏覽器與 CDN 會繼續拿舊快取（部署了新版卻還是舊 layout）。
+// 走 import 讓 Vite 產生帶內容 hash 的檔名，內容一變 URL 就變，快取自動失效。
+
+import layoutImage from './assets/pm1-layout.jpg'
 
 export type Hotspot = {
   targetId: string
@@ -25,7 +31,7 @@ export type Hotspot = {
   note?: string
 }
 
-export const LAYOUT_IMAGE = '/pm1-layout.jpg'
+export const LAYOUT_IMAGE = layoutImage
 /** 背景圖原始尺寸，用來維持長寬比 */
 export const LAYOUT_ASPECT = { width: 3822, height: 1120 }
 
