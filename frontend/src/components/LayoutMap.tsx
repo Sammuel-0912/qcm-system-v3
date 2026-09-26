@@ -17,6 +17,8 @@ function hotspotFill(hotspot: Hotspot, selected: boolean, level: number | null |
 
 export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = true }: Props) {
   const aspect = (LAYOUT_ASPECT.height / LAYOUT_ASPECT.width) * 100
+  // 全部定位完成後，「待確認」的圖例與註腳就沒有意義，自動隱藏
+  const hasGuesses = HOTSPOTS.some((h) => h.confidence === 'guess')
 
   return (
     <div>
@@ -112,10 +114,12 @@ export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = 
           <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-[#8a8a8a] bg-[#78787824]" />
           OP 人工站
         </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-dashed border-slate-400" />
-          位置待現場確認
-        </span>
+        {hasGuesses && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-dashed border-slate-400" />
+            位置待現場確認
+          </span>
+        )}
         {UNPLACED_TARGETS.map((t) => (
           <span key={t.targetId} className="text-amber-700">
             {t.displayName}：{t.reason}，請從上方下拉選取
@@ -144,7 +148,9 @@ export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = 
           </li>
         ))}
       </ol>
-      <p className="mt-2 text-xs text-slate-400">* 位置依標註圖推測，需現場確認</p>
+      {hasGuesses && (
+        <p className="mt-2 text-xs text-slate-400">* 位置依標註圖推測，需現場確認</p>
+      )}
     </div>
   )
 }

@@ -119,9 +119,11 @@ export const HOTSPOTS: Hotspot[] = [
     displayName: '輔綫自動鎖付',
     kpovStation: '輔綫自動鎖付',
     kind: 'CTP',
-    rect: { x: 18.31, y: 58.48, w: 14.39, h: 11.61 },
-    confidence: 'guess',
-    note: 'layout 無此標籤；「輔綫」即下方副線，熱區covering該副線機台，待現場確認',
+    // 副線前面板的四格接縫量測為 x = 666 / 789 / 917 / 1046 / 1173（原圖像素），
+    // 「左數來第二格」即 789~917。
+    rect: { x: 20.64, y: 54.46, w: 3.35, h: 12.05 },
+    confidence: 'confirmed',
+    note: 'layout 無文字標籤；下方副線由左數來第二格（現場確認）',
   },
 
   // ---------- OP（綁站別，無設備代碼） ----------
