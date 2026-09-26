@@ -13,12 +13,6 @@
 //   'confirmed' = 名稱與位置都對得上，可直接用
 //   'guess'     = 我依標註圖推測的位置，需要現場確認
 // ---------------------------------------------------------------------------
-//
-// 背景圖刻意用 import 而非放在 public/：public/ 的檔案會原樣複製、檔名不帶 hash，
-// 換圖後 URL 不變，瀏覽器與 CDN 會繼續拿舊快取（部署了新版卻還是舊 layout）。
-// 走 import 讓 Vite 產生帶內容 hash 的檔名，內容一變 URL 就變，快取自動失效。
-
-import layoutImage from './assets/pm1-layout.jpg'
 
 export type Hotspot = {
   targetId: string
@@ -31,7 +25,7 @@ export type Hotspot = {
   note?: string
 }
 
-export const LAYOUT_IMAGE = layoutImage
+export const LAYOUT_IMAGE = '/pm1-layout.jpg'
 /** 背景圖原始尺寸，用來維持長寬比 */
 export const LAYOUT_ASPECT = { width: 3822, height: 1120 }
 
@@ -39,15 +33,6 @@ export const LAYOUT_ASPECT = { width: 3822, height: 1120 }
 // 換圖時只要重抓這份表，程式不用動。
 export const HOTSPOTS: Hotspot[] = [
   // ---------- CTP（綁設備代碼） ----------
-  {
-    targetId: 'equip:OT00400010',
-    displayName: '散熱膏塗布',
-    kpovStation: '散热膏涂布',
-    kind: 'CTP',
-    rect: { x: 9.18, y: 23.75, w: 7.35, h: 5.36 },
-    confidence: 'confirmed',
-    note: 'layout 標籤：固定散熱塊',
-  },
   {
     targetId: 'equip:OT00420112',
     displayName: '鎖PWB板機1',
@@ -130,6 +115,17 @@ export const HOTSPOTS: Hotspot[] = [
     rect: { x: 20.64, y: 54.46, w: 3.35, h: 12.05 },
     confidence: 'confirmed',
     note: 'layout 無文字標籤；下方副線由左數來第二格（現場確認）',
+  },
+  {
+    targetId: 'equip:OT00400010',
+    displayName: '散熱膏塗布',
+    kpovStation: '散热膏涂布',
+    kind: 'CTP',
+    // 副線第三格 917~1046（接在輔綫自動鎖付右邊）。
+    // 注意：layout 上的「固定散熱塊」是另一個站，與本站無關。
+    rect: { x: 23.99, y: 54.46, w: 3.38, h: 12.05 },
+    confidence: 'confirmed',
+    note: 'layout 無文字標籤；下方副線由左數來第三格，即輔綫自動鎖付右邊一格（現場確認）',
   },
 
   // ---------- OP（綁站別，無設備代碼） ----------
