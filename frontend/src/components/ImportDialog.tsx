@@ -21,6 +21,10 @@ const COUNT_LABELS: Record<string, string> = {
   kpov: 'KPOV',
   alarms: '告警事件',
   repairs: '維修紀錄',
+  repairsNew: '維修紀錄・新增',
+  repairsUpdated: '維修紀錄・更新',
+  repairsUnchanged: '維修紀錄・與舊資料相同',
+  repairsCarried: '維修紀錄・沿用舊資料',
   levelEvents: '等級異動事件',
 }
 

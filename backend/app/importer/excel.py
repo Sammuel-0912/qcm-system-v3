@@ -4,6 +4,14 @@
     dim_detection_method -> dim_equipment / dim_error_code -> fact_kpov
     -> fact_repair -> fact_level_event
 整個流程為單一交易，失敗不留半套資料（REQ-IMP-09）。
+
+只有「修護報表」每次都必須提供。Dim_Equipment、KPOV 庫、錯誤碼庫、告警明細
+若未提供（工作表不存在或完全空白），沿用目前生效批次的資料複製到新批次；
+首次匯入（尚無生效批次）時，Dim_Equipment 與 KPOV 庫仍為必要。
+
+維修紀錄跨批次累積：以（序號, KPOV 編號, 設備ID）比對前一批次，
+內容完全相同者略過、內容有變（例如後來補上改善）者以新版取代、
+其餘為新增；這次檔案沒有的舊紀錄原樣保留。等級異動事件以合併後的全部紀錄重新推導。
 """
 from __future__ import annotations
 
@@ -12,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import openpyxl
-from sqlalchemy import update
+from sqlalchemy import func, insert, literal, select, update
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -184,6 +192,61 @@ def _row_to_dict(row: tuple, field_index: dict[str, int]) -> dict:
     return out
 
 
+def _provided_sheet(workbook, role: str):
+    """找出工作表；不存在或完全空白（連表頭都沒有）視為未提供。"""
+    sheet = _find_sheet(workbook, role)
+    if sheet is None:
+        return None
+    for row in sheet.iter_rows(values_only=True):
+        if any(cell is not None and str(cell).strip() for cell in row):
+            return sheet
+    return None
+
+
+# --------------------------------------------------------------------------- 沿用前一批次
+
+
+def _active_batch_id(session: Session) -> int | None:
+    return session.scalar(
+        select(ImportBatch.id).where(ImportBatch.is_active.is_(True)).order_by(ImportBatch.id.desc()).limit(1)
+    )
+
+
+def _carry_over(session: Session, model, from_batch: int, to_batch: int) -> int:
+    """以 INSERT ... SELECT 把前一批次的整張表複製到新批次，回傳筆數。"""
+    table = model.__table__
+    columns = [c for c in table.columns if c.name not in ("id", "batch_id")]
+    source = select(literal(to_batch).label("batch_id"), *columns).where(table.c.batch_id == from_batch)
+    session.execute(insert(table).from_select(["batch_id", *(c.name for c in columns)], source))
+    return session.scalar(select(func.count()).select_from(table).where(table.c.batch_id == to_batch)) or 0
+
+
+# --------------------------------------------------------------------------- 維修紀錄合併
+
+REPAIR_FIELDS = tuple(dict.fromkeys(M.REPAIR_COLUMNS.values()))
+
+
+def _comparable(value: Any) -> Any:
+    # SQLite 讀回的 datetime 不帶時區，統一成 UTC 才能與剛解析的值比較
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt.timezone.utc)
+        return value.astimezone(dt.timezone.utc)
+    return value
+
+
+def _repair_values(source) -> dict:
+    get = source.get if isinstance(source, dict) else lambda f: getattr(source, f)
+    return {f: _comparable(get(f)) for f in REPAIR_FIELDS}
+
+
+def _repair_key(values: dict) -> tuple:
+    if values.get("serial_no"):
+        return (values["serial_no"], values["kpov_no"], values["equipment_code"])
+    # 沒有序號就無法辨識是否為同一筆，只把內容完全相同的視為同一筆
+    return ("", *(str(values[f]) for f in REPAIR_FIELDS))
+
+
 # --------------------------------------------------------------------------- 偵測方式字典
 
 
@@ -261,6 +324,13 @@ def import_workbook(
 
 
 def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportReport) -> None:
+    previous = _active_batch_id(session)
+
+    def carry(model, label: str, key: str) -> None:
+        count = _carry_over(session, model, previous, batch.id)
+        report.row_counts[key] = count
+        report.warnings.append(f"未提供「{label}」，沿用批次 #{previous} 的 {count} 筆資料")
+
     repair_sheet = _find_sheet(workbook, "repair")
     if repair_sheet is None:
         raise ImportError_("找不到「修護報表」工作表")
@@ -275,26 +345,34 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     report.row_counts["detectionMethods"] = len(dictionary)
 
     # 2) 設備維度
-    equipment_sheet = _find_sheet(workbook, "equipment")
-    if equipment_sheet is None:
-        raise ImportError_("找不到「Dim_Equipment」工作表")
-    idx, rows, _ = _read_table(equipment_sheet, M.EQUIPMENT_COLUMNS, M.EQUIPMENT_REQUIRED, "equipment")
-    equipment_codes: set[str] = set()
-    equipment_count = 0
-    for row in rows:
-        data = _row_to_dict(row, idx)
-        code = data.get("equipment_code")
-        if not code or code in equipment_codes:
-            continue
-        equipment_codes.add(code)
-        session.add(DimEquipment(batch_id=batch.id, **data))
-        equipment_count += 1
-    report.row_counts["equipment"] = equipment_count
+    equipment_sheet = _provided_sheet(workbook, "equipment")
+    if equipment_sheet is not None:
+        idx, rows, _ = _read_table(equipment_sheet, M.EQUIPMENT_COLUMNS, M.EQUIPMENT_REQUIRED, "equipment")
+        equipment_codes: set[str] = set()
+        equipment_count = 0
+        for row in rows:
+            data = _row_to_dict(row, idx)
+            code = data.get("equipment_code")
+            if not code or code in equipment_codes:
+                continue
+            equipment_codes.add(code)
+            session.add(DimEquipment(batch_id=batch.id, **data))
+            equipment_count += 1
+        report.row_counts["equipment"] = equipment_count
+    elif previous is not None:
+        carry(DimEquipment, "Dim_Equipment", "equipment")
+        equipment_codes = set(
+            session.scalars(select(DimEquipment.equipment_code).where(DimEquipment.batch_id == batch.id))
+        )
+    else:
+        raise ImportError_("首次匯入必須包含「Dim_Equipment」工作表")
 
     # 3) 錯誤碼字典
-    error_sheet = _find_sheet(workbook, "error_code")
+    error_sheet = _provided_sheet(workbook, "error_code")
     error_count = 0
-    if error_sheet is not None:
+    if error_sheet is None and previous is not None:
+        carry(DimErrorCode, "設備告警品質相關代碼庫", "errorCodes")
+    elif error_sheet is not None:
         idx, rows, _ = _read_table(error_sheet, M.ERROR_CODE_COLUMNS, M.ERROR_CODE_REQUIRED, "error_code")
         seen_codes: set[str] = set()
         for row in rows:
@@ -305,7 +383,9 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
             seen_codes.add(code)
             session.add(DimErrorCode(batch_id=batch.id, **data))
             error_count += 1
-    report.row_counts["errorCodes"] = error_count
+        report.row_counts["errorCodes"] = error_count
+    else:
+        report.row_counts["errorCodes"] = 0
 
     dup_sheet = _find_sheet(workbook, "error_code_dup")
     if dup_sheet is not None:
@@ -314,66 +394,78 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
         )
 
     # 4) KPOV 基準
-    kpov_sheet = _find_sheet(workbook, "kpov")
-    if kpov_sheet is None:
-        raise ImportError_("找不到「KPOV库-by 站」工作表")
-    idx, rows, _ = _read_table(kpov_sheet, M.KPOV_COLUMNS, M.KPOV_REQUIRED, "kpov")
-    kpov_count = 0
-    seen_kpov: set[tuple[str, str]] = set()
-    op_count = 0
-    for row_no, row in enumerate(rows, start=2):
-        data = _row_to_dict(row, idx)
-        # OP 站沒有設備代碼，只要有站別就是有效列——不可用 equipment_code 當存在性判斷，
-        # 否則 23 筆 OP 會被靜默丟棄。
-        if not data.get("station"):
-            continue
-        attribute1 = data.get("attribute1") or "UNKNOWN"
-        key = (attribute1, data["station"], data.get("kpov_no") or "")
-        if key in seen_kpov:
-            report.warnings.append(
-                f"KPOV 第 {row_no} 列重複（{attribute1} · {key[1]} · 編號 {key[2]}），已略過"
-            )
-            continue
-        seen_kpov.add(key)
-        if attribute1 == "OP":
-            op_count += 1
-
-        level = compute_level(data.get("small_y_score"), data.get("big_y_score"))
-        source = data.get("level_source")
-        mismatch = False
-        if source and level is not None:
-            expected = f"Level {level}"
-            if M.normalize(source) != expected:
-                mismatch = True
-                report.level_mismatches.append(
-                    {
-                        "row": row_no,
-                        "kpovNo": data.get("kpov_no"),
-                        "kpovName": data.get("kpov_name"),
-                        "equipmentCode": data["equipment_code"],
-                        "station": data.get("station"),
-                        "smallY": data.get("small_y_score"),
-                        "bigY": data.get("big_y_score"),
-                        "sourceLevel": source,
-                        "computedLevel": expected,
-                    }
+    kpov_sheet = _provided_sheet(workbook, "kpov")
+    if kpov_sheet is not None:
+        idx, rows, _ = _read_table(kpov_sheet, M.KPOV_COLUMNS, M.KPOV_REQUIRED, "kpov")
+        kpov_count = 0
+        seen_kpov: set[tuple[str, str]] = set()
+        op_count = 0
+        for row_no, row in enumerate(rows, start=2):
+            data = _row_to_dict(row, idx)
+            # OP 站沒有設備代碼，只要有站別就是有效列——不可用 equipment_code 當存在性判斷，
+            # 否則 23 筆 OP 會被靜默丟棄。
+            if not data.get("station"):
+                continue
+            attribute1 = data.get("attribute1") or "UNKNOWN"
+            key = (attribute1, data["station"], data.get("kpov_no") or "")
+            if key in seen_kpov:
+                report.warnings.append(
+                    f"KPOV 第 {row_no} 列重複（{attribute1} · {key[1]} · 編號 {key[2]}），已略過"
                 )
-        equipment_code = data.get("equipment_code")
-        if equipment_code and equipment_code not in equipment_codes:
-            report.unmatched_keys.append(
-                {"table": "fact_kpov", "row": row_no, "equipmentCode": equipment_code}
-            )
+                continue
+            seen_kpov.add(key)
+            if attribute1 == "OP":
+                op_count += 1
 
-        session.add(FactKpov(batch_id=batch.id, level_baseline=level, level_mismatch=mismatch, **data))
-        kpov_count += 1
-    report.row_counts["kpov"] = kpov_count
-    report.row_counts["kpovOp"] = op_count
-    report.row_counts["kpovCtp"] = kpov_count - op_count
+            level = compute_level(data.get("small_y_score"), data.get("big_y_score"))
+            source = data.get("level_source")
+            mismatch = False
+            if source and level is not None:
+                expected = f"Level {level}"
+                if M.normalize(source) != expected:
+                    mismatch = True
+                    report.level_mismatches.append(
+                        {
+                            "row": row_no,
+                            "kpovNo": data.get("kpov_no"),
+                            "kpovName": data.get("kpov_name"),
+                            "equipmentCode": data["equipment_code"],
+                            "station": data.get("station"),
+                            "smallY": data.get("small_y_score"),
+                            "bigY": data.get("big_y_score"),
+                            "sourceLevel": source,
+                            "computedLevel": expected,
+                        }
+                    )
+            equipment_code = data.get("equipment_code")
+            if equipment_code and equipment_code not in equipment_codes:
+                report.unmatched_keys.append(
+                    {"table": "fact_kpov", "row": row_no, "equipmentCode": equipment_code}
+                )
+
+            session.add(FactKpov(batch_id=batch.id, level_baseline=level, level_mismatch=mismatch, **data))
+            kpov_count += 1
+        report.row_counts["kpov"] = kpov_count
+        report.row_counts["kpovOp"] = op_count
+        report.row_counts["kpovCtp"] = kpov_count - op_count
+    elif previous is not None:
+        carry(FactKpov, "KPOV库-by 站", "kpov")
+        op_count = session.scalar(
+            select(func.count()).select_from(FactKpov).where(
+                FactKpov.batch_id == batch.id, FactKpov.attribute1 == "OP"
+            )
+        ) or 0
+        report.row_counts["kpovOp"] = op_count
+        report.row_counts["kpovCtp"] = report.row_counts["kpov"] - op_count
+    else:
+        raise ImportError_("首次匯入必須包含「KPOV库-by 站」工作表")
 
     # 5) 告警明細
-    alarm_sheet = _find_sheet(workbook, "alarm")
+    alarm_sheet = _provided_sheet(workbook, "alarm")
     alarm_count = 0
-    if alarm_sheet is not None:
+    if alarm_sheet is None and previous is not None:
+        carry(FactAlarm, "設備告警", "alarms")
+    elif alarm_sheet is not None:
         idx, rows, _ = _read_table(alarm_sheet, M.ALARM_COLUMNS, M.ALARM_REQUIRED, "alarm")
         buffer = []
         for row in rows:
@@ -387,11 +479,13 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 buffer.clear()
         if buffer:
             session.bulk_save_objects(buffer)
-    report.row_counts["alarms"] = alarm_count
+        report.row_counts["alarms"] = alarm_count
+    else:
+        report.row_counts["alarms"] = 0
 
     # 6) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
     idx, rows, _ = _read_table(repair_sheet, M.REPAIR_COLUMNS, M.REPAIR_REQUIRED, "repair")
-    repairs: list[FactRepair] = []
+    incoming: dict[tuple, dict] = {}
     for row_no, row in enumerate(rows, start=2):
         data = _row_to_dict(row, idx)
         if not data.get("equipment_code") and not data.get("kpov_no"):
@@ -401,11 +495,44 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 {"row": row_no, "reason": "設備ID 或 KPOV 编号 缺值", "serialNo": data.get("serial_no")}
             )
             continue
-        repair = FactRepair(batch_id=batch.id, **data)
+        values = _repair_values(data)
+        key = _repair_key(values)
+        if key in incoming:
+            report.warnings.append(
+                f"修護報表第 {row_no} 列與前面的紀錄重複（序號 {values['serial_no']}），以第 {row_no} 列為準"
+            )
+        incoming[key] = values
+
+    # 與前一批次合併
+    merged: dict[tuple, dict] = {}
+    if previous is not None:
+        for old in session.scalars(
+            select(FactRepair).where(FactRepair.batch_id == previous).order_by(FactRepair.id)
+        ):
+            values = _repair_values(old)
+            merged[_repair_key(values)] = values
+    new_count = updated_count = unchanged_count = 0
+    for key, values in incoming.items():
+        old = merged.get(key)
+        if old is None:
+            new_count += 1
+        elif old == values:
+            unchanged_count += 1
+        else:
+            updated_count += 1
+        merged[key] = values
+
+    repairs: list[FactRepair] = []
+    for values in merged.values():
+        repair = FactRepair(batch_id=batch.id, **values)
         session.add(repair)
         repairs.append(repair)
     session.flush()
     report.row_counts["repairs"] = len(repairs)
+    report.row_counts["repairsNew"] = new_count
+    report.row_counts["repairsUpdated"] = updated_count
+    report.row_counts["repairsUnchanged"] = unchanged_count
+    report.row_counts["repairsCarried"] = len(merged) - len(incoming)
 
     # 7) 等級異動事件
     derive_level_events(session, batch, repairs, method_scores, report)

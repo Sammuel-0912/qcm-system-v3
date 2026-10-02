@@ -230,3 +230,115 @@ def test_detection_dictionary_parsed(imported):
     # 切點語意（spec.md §2.1）：>= 6 的方式都不是「已證實可靠的機器偵測」
     unreliable = {name for name, score in lookup.items() if score >= 6}
     assert unreliable == {"未建立", "隨機稽查", "人工檢測(未證實可靠)", "機器偵測(未證實可靠)", "人工檢測(已證實可靠)"}
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
+def test_repair_only_workbook_carries_over_previous_batch(tmp_path):
+    """第二次匯入只放「修護報表」：其餘工作表沿用前一批次，事件照常推導。"""
+    import openpyxl
+
+    os.environ["QCM_DATABASE_URL"] = f"sqlite:///{tmp_path / 'carry.db'}"
+    import importlib
+
+    import app.config
+    import app.db
+
+    importlib.reload(app.config)
+    importlib.reload(app.db)
+    import app.models
+
+    importlib.reload(app.models)
+    from app.db import SessionLocal, init_db
+    from app.importer.excel import ImportError_, import_workbook
+
+    repair_only = tmp_path / "repair_only.xlsx"
+    wb = openpyxl.load_workbook(RAW)
+    for sheet in list(wb.worksheets):
+        if not sheet.title.startswith("修護報表"):
+            wb.remove(sheet)
+    wb.save(repair_only)
+
+    init_db()
+    session = SessionLocal()
+
+    # 首次匯入不可缺 Dim_Equipment / KPOV
+    with pytest.raises(ImportError_):
+        import_workbook(session, str(repair_only), "repair_only.xlsx")
+
+    first_batch, first = import_workbook(session, str(RAW), "raw_data.xlsx")
+    second_batch, second = import_workbook(session, str(repair_only), "repair_only.xlsx")
+
+    assert second_batch.is_active and not first_batch.is_active
+    for key in ("equipment", "kpov", "kpovOp", "kpovCtp", "errorCodes", "alarms", "repairs"):
+        assert second.row_counts[key] == first.row_counts[key], key
+    assert len(second.level_events) == len(first.level_events) == 6
+    assert any("沿用批次" in w for w in second.warnings)
+    assert second.row_counts["repairsUnchanged"] == first.row_counts["repairs"]
+    assert second.row_counts["repairsNew"] == second.row_counts["repairsUpdated"] == 0
+    session.close()
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
+def test_repair_records_merge_across_imports(tmp_path):
+    """舊紀錄相同者略過、有變者更新、檔案中沒有的舊紀錄保留、新序號為新增。"""
+    import openpyxl
+
+    os.environ["QCM_DATABASE_URL"] = f"sqlite:///{tmp_path / 'merge.db'}"
+    import importlib
+
+    import app.config
+    import app.db
+
+    importlib.reload(app.config)
+    importlib.reload(app.db)
+    import app.models
+
+    importlib.reload(app.models)
+    from sqlalchemy import select
+
+    from app.db import SessionLocal, init_db
+    from app.importer import mapping as M
+    from app.importer.excel import import_workbook
+    from app.models import FactRepair
+
+    wb = openpyxl.load_workbook(RAW)
+    for sheet in list(wb.worksheets):
+        if not sheet.title.startswith("修護報表"):
+            wb.remove(sheet)
+    ws = wb.worksheets[0]
+    col = {M.normalize(c.value): c.column for c in ws[1] if c.value}
+    serial, equip, kpov, remark = col["序號"], col["設備ID"], col["KPOV 编号"], col["維修備註"]
+    records = [r for r in range(2, ws.max_row + 1) if ws.cell(r, equip).value and ws.cell(r, kpov).value]
+    assert len(records) == 3
+    changed, removed, template = records
+
+    removed_serial = str(ws.cell(removed, serial).value)
+    ws.cell(changed, remark).value = "已改善完成"
+    # 只清掉維修紀錄欄位，同一列右側的偵測方式字典要保留
+    for c in col.values():
+        ws.cell(removed, c).value = None
+    new_row = ws.max_row + 1
+    for c in col.values():
+        ws.cell(new_row, c).value = ws.cell(template, c).value
+    ws.cell(new_row, serial).value = "NEW-001"
+    merged_file = tmp_path / "merged.xlsx"
+    wb.save(merged_file)
+
+    init_db()
+    session = SessionLocal()
+    import_workbook(session, str(RAW), "raw_data.xlsx")
+    batch, report = import_workbook(session, str(merged_file), "merged.xlsx")
+
+    counts = report.row_counts
+    assert counts["repairsNew"] == 1
+    assert counts["repairsUpdated"] == 1
+    assert counts["repairsUnchanged"] == 1
+    assert counts["repairsCarried"] == 1
+    assert counts["repairs"] == 4
+
+    rows = session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)).all()
+    by_serial = {r.serial_no: r for r in rows}
+    assert "NEW-001" in by_serial
+    assert removed_serial in by_serial
+    assert by_serial[str(ws.cell(changed, serial).value)].remark == "已改善完成"
+    session.close()
