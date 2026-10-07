@@ -16,6 +16,11 @@ services:
     build: ./backend
     environment:
       QCM_DATABASE_URL: postgresql+psycopg://qcm:qcm@db:5432/qcm
+      QCM_DATA_DIR: /app/data
+    volumes:
+      # AR 點檢的設備圖檔存在 QCM_DATA_DIR/ar-uploads 下，
+      # 沒有這個 volume 的話重新部署就會全部消失。
+      - apidata:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -32,3 +37,4 @@ services:
 
 volumes:
   pgdata:
+  apidata:

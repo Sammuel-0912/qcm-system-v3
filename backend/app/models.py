@@ -237,3 +237,64 @@ class FactLevelEvent(Base):
     note: Mapped[str | None] = mapped_column(Text)
 
     repair: Mapped[FactRepair | None] = relationship(back_populates="events")
+
+
+# ---------------------------------------------------------------------------
+# AR 設備點檢（整合自 webXR-test，見 ar-integration-spec.md §6）
+# ---------------------------------------------------------------------------
+
+AR_STATUSES = ("ok", "warn")
+
+
+class ArDevice(Base):
+    """AR marker 對應的設備。
+
+    刻意不掛 batch_id：品控力的維度表是批次式的（每次匯入 Excel 建新批次），
+    AR 的設備與點檢紀錄則是連續累積的營運資料，不隨匯入批次更替。
+    """
+
+    __tablename__ = "ar_device"
+    __table_args__ = (
+        CheckConstraint("marker_id BETWEEN 0 AND 63", name="ck_ar_marker_range"),
+    )
+
+    # AR.js 3x3 barcode marker，有效值 0~63
+    marker_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    work_instruction: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)  # 相對路徑，例 /api/ar/uploads/x.jpg
+
+    # 橋接品控力設備主檔。刻意「不」建外鍵：dim_equipment 的主鍵是
+    # (batch_id, equipment_code)，每次匯入都會產生新的一組；建外鍵會把 AR 設備
+    # 綁死在某個匯入批次上，下次匯入就斷裂。查詢時 join 當前 active 批次即可。
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+
+    inspections: Mapped[list["ArInspection"]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
+
+
+class ArInspection(Base):
+    """一次點檢紀錄。"""
+
+    __tablename__ = "ar_inspection"
+    __table_args__ = (
+        CheckConstraint(f"status IN {AR_STATUSES}", name="ck_ar_status"),
+        Index("ix_ar_inspection_device_time", "marker_id", "inspected_at"),
+    )
+
+    id: Mapped[int] = _pk()
+    marker_id: Mapped[int] = mapped_column(
+        ForeignKey("ar_device.marker_id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    inspected_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+
+    device: Mapped[ArDevice] = relationship(back_populates="inspections")
