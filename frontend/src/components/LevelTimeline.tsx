@@ -97,8 +97,8 @@ function LevelWithDetail({
 function Scores({ smallY, bigY }: { smallY: number | null; bigY: number | null }) {
   return (
     <span className="inline-flex items-baseline gap-2 font-mono text-xs tabular-nums text-slate-600">
-      <span title="小y — 站內偵測度">y:{smallY ?? '—'}</span>
-      <span title="大Y — 下游偵測度">Y:{bigY ?? '—'}</span>
+      <span title="y — 站內偵測度">y:{smallY ?? '—'}</span>
+      <span title="Y — 下游偵測度">Y:{bigY ?? '—'}</span>
     </span>
   )
 }
@@ -218,7 +218,7 @@ export function LevelTimeline({ data }: Props) {
               </div>
 
               {event.repairSerial && (
-                <p className="mt-1 text-xs text-slate-400">維修序號 {event.repairSerial}</p>
+                <p className="mt-1 text-xs text-slate-400">導入產品序號 {event.repairSerial}</p>
               )}
             </li>
           )

@@ -144,7 +144,7 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
       <text x="335" y="75" fontSize="18" fontWeight="bold" fill="#333">
         Y
       </text>
-      <text x="370" y="75" fontSize="18" fontWeight="bold" fill="#333">
+      <text x="370" y="90" fontSize="18" fontWeight="bold" fill="#333">
         高
       </text>
       <text x="350" y="440" fontSize="18" fontWeight="bold" fill="#333">
@@ -163,7 +163,7 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
       <text x="615" y="225" fontSize="18" fontWeight="bold" fill="#333">
         y
       </text>
-      <text x="615" y="262" fontSize="18" fontWeight="bold" fill="#333">
+      <text x="615" y="280" fontSize="18" fontWeight="bold" fill="#333">
         高
       </text>
 
