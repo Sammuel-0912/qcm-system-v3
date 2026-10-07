@@ -76,3 +76,13 @@ DATABASE_URL = _validate(_normalize(_raw_url))
 
 # 偵測度切點：<= DETECTION_THRESHOLD 為「偵測能力高」（spec.md §2.1）
 DETECTION_THRESHOLD = 5
+
+
+# ---------------------------------------------------------------------------
+# AR 設備點檢（ar-integration-spec.md §5 / D-04）
+# ---------------------------------------------------------------------------
+# 上傳的設備圖檔放在 DATA_DIR 底下，與資料庫共用同一個 volume，
+# 重新部署後才不會遺失。對外網址統一掛在 /api/ar/uploads，
+# 讓前端的 nginx 以單一 /api/ 規則轉發，不必為靜態檔另開規則。
+AR_UPLOAD_DIR = DATA_DIR / "ar-uploads"
+AR_UPLOAD_URL_PREFIX = "/api/ar/uploads"
