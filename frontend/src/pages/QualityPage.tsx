@@ -207,7 +207,7 @@ export default function QualityPage() {
   )
 
   return (
-    <AppShell title="WJ1 DCS 品控力監督看板" actions={headerActions}>
+    <AppShell title="WJ1 DCS 品控力風險智控平台" actions={headerActions}>
 
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
         {/* ── 頂部：篩選器（只影響象限圖與異動總覽） ── */}
