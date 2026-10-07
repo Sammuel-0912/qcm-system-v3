@@ -214,6 +214,12 @@ export default function QualityPage() {
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-end gap-4">
             <MultiSelect
+              label="線別"
+              options={(filters?.lines ?? []).map((l) => ({ value: l.code, label: l.label }))}
+              selected={state.lines}
+              onChange={(next) => setState((s) => ({ ...s, lines: next }))}
+            />
+            <MultiSelect
               label="屬性"
               options={(filters?.attributes ?? []).map((a) => ({
                 value: a,
@@ -231,12 +237,6 @@ export default function QualityPage() {
               }))}
               selected={state.stations}
               onChange={(next) => setState((s) => ({ ...s, stations: next }))}
-            />
-            <MultiSelect
-              label="線別"
-              options={(filters?.lines ?? []).map((l) => ({ value: l.code, label: l.label }))}
-              selected={state.lines}
-              onChange={(next) => setState((s) => ({ ...s, lines: next }))}
             />
             {(state.stations.length > 0 || state.lines.length > 0 || state.attributes.length > 0) && (
               <button
