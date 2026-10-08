@@ -689,7 +689,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     _import_alarms(session, workbook, batch, report, previous, kpov_keys, carry)
 
     # 6) PCN / ECN 變更紀錄、高風險項點檢
-    _import_changes(session, workbook, batch, report, previous, carry)
+    _import_changes(session, workbook, batch, report, previous, lookup)
     _import_check_items(session, workbook, batch, report, previous, carry, lookup)
 
     # 7) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
@@ -836,7 +836,7 @@ def _import_alarms(session, workbook, batch, report, previous, kpov_keys, carry)
         )
 
 
-def _import_changes(session, workbook, batch, report, previous, carry) -> None:
+def _import_changes(session, workbook, batch, report, previous, lookup: _StationLookup) -> None:
     for role, kind in (("pcn", "PCN"), ("ecn", "ECN")):
         sheet = _provided_sheet(workbook, role)
         key = f"{kind.lower()}Records"
@@ -859,6 +859,18 @@ def _import_changes(session, workbook, batch, report, previous, carry) -> None:
                 data[field] = _clean_ref(data.get(field))
             if kind == "PCN" and not data.get("kpov_no"):
                 continue
+            # OP 人工站的 PCN 沒填設備ID，與修護報表相同，依影響站別查「設備對應參考」
+            if not data.get("equipment_code") and data.get("station"):
+                data["equipment_code"] = lookup.resolve(data["station"], op=True)
+                if kind == "PCN" and not data["equipment_code"]:
+                    report.unmatched_keys.append(
+                        {
+                            "table": "fact_change_record",
+                            "station": data["station"],
+                            "kpovNo": data.get("kpov_no"),
+                            "reason": "PCN 的影響站別在「設備對應參考」中找不到設備代碼",
+                        }
+                    )
             session.add(FactChangeRecord(batch_id=batch.id, kind=kind, **data))
             count += 1
         report.row_counts[key] = count

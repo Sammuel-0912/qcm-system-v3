@@ -260,7 +260,7 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
 def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
     """該 KPOV 的 PCN / ECN 變更紀錄，只供時間軸顯示，不影響等級計算。
 
-    PCN 以 (KPOV 編號, 設備ID) 對應；ECN 若影響站別與設備ID 皆為 NA 視為全廠，
+    PCN 以 (KPOV 編號, 設備ID) 對應，沒有設備ID 時以 (KPOV 編號, 站別)；ECN 若影響站別與設備ID 皆為 NA 視為全廠，
     否則依設備ID 或站別對應。
     """
     records = session.scalars(
@@ -271,7 +271,13 @@ def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
     out = []
     for r in records:
         if r.kind == "PCN":
-            if r.kpov_no != kpov.kpov_no or r.equipment_code != kpov.equipment_code:
+            if r.kpov_no != kpov.kpov_no:
+                continue
+            # 有設備ID 以設備比對；OP 站的 PCN 若匯入時未補上設備ID（舊批次），退回以站別比對
+            if r.equipment_code:
+                if r.equipment_code != kpov.equipment_code:
+                    continue
+            elif not r.station or r.station != kpov.station:
                 continue
         else:
             plant_wide = not r.equipment_code and not r.station
