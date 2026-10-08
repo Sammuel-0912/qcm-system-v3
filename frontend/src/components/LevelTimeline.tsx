@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { HistoryResponse } from '../api/client'
+import type { ChangeRecord, HistoryResponse } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
 import { HOTSPOTS } from '../layoutConfig'
 
@@ -133,6 +133,57 @@ function Axis({
   )
 }
 
+/** 「Level 3」-> 3；PCN/ECN 的等級欄是文字 */
+function parseLevel(value: string | null): number | null {
+  const match = value?.match(/\d/)
+  return match ? Number(match[0]) : null
+}
+
+/** PCN / ECN 變更節點：只標示時間與前後狀態，不參與等級計算 */
+function ChangeNode({ change }: { change: ChangeRecord }) {
+  const isPcn = change.kind === 'PCN'
+  const before = parseLevel(change.levelBefore)
+  const after = parseLevel(change.levelAfter)
+  const hasScores = change.smallYBefore || change.bigYBefore || change.smallYAfter || change.bigYAfter
+  return (
+    <li className="relative">
+      <span
+        className={`absolute -left-[27px] top-1 h-3 w-3 rounded-full border-2 border-white ${
+          isPcn ? 'bg-sky-500' : 'bg-violet-500'
+        }`}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
+            isPcn ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700'
+          }`}
+        >
+          {isPcn ? 'PCN 變更' : `ECN ${change.ecnNo ?? ''}`.trim()}
+        </span>
+        {change.plantWide && <span className="text-xs text-slate-400">全廠</span>}
+        {(before !== null || after !== null) && (
+          <>
+            <Level level={before} />
+            <span className="text-slate-400">→</span>
+            <Level level={after} />
+          </>
+        )}
+        <span className="ml-auto text-xs tabular-nums text-slate-400">
+          {change.effectiveAt?.slice(0, 10) ?? '日期未填'}
+        </span>
+      </div>
+      {change.content && <p className="mt-1.5 text-sm text-slate-700">{change.content}</p>}
+      {hasScores && (
+        <div className="mt-2 rounded-md bg-slate-50 p-2 font-mono text-xs tabular-nums text-slate-600">
+          y:{change.smallYBefore ?? '—'} Y:{change.bigYBefore ?? '—'}
+          <span className="mx-1.5 text-slate-400">→</span>
+          y:{change.smallYAfter ?? '—'} Y:{change.bigYAfter ?? '—'}
+        </div>
+      )}
+    </li>
+  )
+}
+
 export function LevelTimeline({ data }: Props) {
   // 主標題以 KPOV 庫的站別為準（使用者指定）。
   // 現場名稱與庫內名稱不一致時（OT00420104 庫裡是「鎖電感」、現場是「鎖銅排2」），
@@ -141,8 +192,25 @@ export function LevelTimeline({ data }: Props) {
   const siteName = hotspot?.displayName
   const showSiteName = Boolean(siteName && siteName !== data.station)
 
-  // 時間軸由新到舊：現況 → 事件（倒序）→ 基準
-  const events = [...data.events].reverse()
+  // 時間軸由新到舊：現況 → 維修事件與 PCN/ECN 依日期交錯（倒序）→ 基準。
+  // 同一天時 PCN/ECN 排在維修事件之後（較舊）：變更先切入，之後才觀察到不良。
+  type Node =
+    | { kind: 'event'; at: string; event: HistoryResponse['events'][number]; idx: number }
+    | { kind: 'change'; at: string; change: ChangeRecord; idx: number }
+  const nodes: Node[] = [
+    ...data.events.map((event, idx) => ({ kind: 'event' as const, at: event.effectiveAt, event, idx })),
+    ...(data.changes ?? []).map((change, idx) => ({
+      kind: 'change' as const,
+      at: change.effectiveAt ?? '',
+      change,
+      idx,
+    })),
+  ].sort((a, b) => {
+    const day = b.at.slice(0, 10).localeCompare(a.at.slice(0, 10))
+    if (day !== 0) return day
+    if (a.kind !== b.kind) return a.kind === 'event' ? -1 : 1
+    return a.kind === 'event' ? b.at.localeCompare(a.at) || b.idx - a.idx : b.idx - a.idx
+  })
 
   return (
     <div>
@@ -166,7 +234,11 @@ export function LevelTimeline({ data }: Props) {
           </div>
         </li>
 
-        {events.map((event, idx) => {
+        {nodes.map((node) => {
+          if (node.kind === 'change') {
+            return <ChangeNode key={`change-${node.idx}`} change={node.change} />
+          }
+          const { event, idx } = node
           const isDegrade = event.type === 'DEGRADE'
           const repair = event.repair
           // 區分兩種「沒東西」：後端沒帶回維修紀錄（多半是後端未更新或未重啟），

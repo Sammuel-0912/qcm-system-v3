@@ -42,7 +42,8 @@ class KpovState:
 
         CTP 站綁設備代碼（`equip:OT00420105`），因為 KPOV 庫的站別名稱與現場實際
         不完全相符，設備代碼才是穩定的唯一權威。
-        OP 站沒有設備，只能綁站別（`op:鎖後蓋`）。
+        OP 人工站的設備代碼（A0001–A0008）由「設備對應參考」補上，同樣綁設備；
+        舊資料若仍無設備代碼，才退回綁站別（`op:鎖後蓋`）。
         """
         if self.kpov.equipment_code:
             return f"equip:{self.kpov.equipment_code}"

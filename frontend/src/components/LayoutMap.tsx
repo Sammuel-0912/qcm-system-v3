@@ -120,11 +120,11 @@ export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = 
             位置待現場確認
           </span>
         )}
-        {UNPLACED_TARGETS.map((t) => (
-          <span key={t.targetId} className="text-amber-700">
-            {t.displayName}：{t.reason}，請從上方下拉選取
+        {UNPLACED_TARGETS.length > 0 && (
+          <span className="text-amber-700" title={UNPLACED_TARGETS.map((t) => `${t.displayName}：${t.reason}`).join('\n')}>
+            尚未放上熱區：{UNPLACED_TARGETS.map((t) => t.displayName).join('、')}，請從上方下拉選取
           </span>
-        ))}
+        )}
       </div>
 
       <ol className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-500 sm:grid-cols-3 lg:grid-cols-4">

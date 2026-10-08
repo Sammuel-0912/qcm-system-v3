@@ -5,7 +5,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import DimEquipment, ImportBatch
-from .level import LEVEL_COLORS
 from .lifecycle import KpovState, build_states, summarize
 
 
@@ -28,6 +27,11 @@ def _split(value: str | None) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _is_op(state: KpovState) -> bool:
+    # OP 站現在也有設備代碼（A000N），不能再以「沒有設備代碼」判斷
+    return state.kpov.attribute1 == "OP" or not state.kpov.equipment_code
+
+
 def equipment_index(session: Session, batch_id: int) -> dict[str, DimEquipment]:
     rows = session.scalars(select(DimEquipment).where(DimEquipment.batch_id == batch_id)).all()
     return {row.equipment_code: row for row in rows}
@@ -48,7 +52,8 @@ def apply_filters(
     線別篩選時先取該線別的設備 -> 反查其站別 -> 顯示這些站別的 KPOV。
     若該線別本身沒有 KPOV 定義（例如 DCS-PM2 的孿生設備），視為繼承同站別的定義。
 
-    OP 站沒有設備代碼，無法對應到線別，因此**不受線別篩選影響**（線別篩選只作用於 CTP）。
+    OP 人工站（設備 A0001–A0008 來自「設備對應參考」）不屬於任何線別，
+    因此**不受線別篩選影響**（線別篩選只作用於 CTP）。
     """
     stations = _split(station)
     lines = _split(line)
@@ -68,8 +73,8 @@ def apply_filters(
 
     if lines:
         # OP 站不參與線別篩選，先抽出來稍後併回
-        op_states = [s for s in selected if not s.kpov.equipment_code]
-        selected = [s for s in selected if s.kpov.equipment_code]
+        op_states = [s for s in selected if _is_op(s)]
+        selected = [s for s in selected if not _is_op(s) and s.kpov.equipment_code]
         equipment = equipment_index(session, batch_id)
         line_set = set(lines)
 
@@ -145,34 +150,6 @@ def quadrant_payload(
         "filtered": filtered,
         "deviationCount": deviation,
         "lineInheritance": meta,
-    }
-
-
-def bar_payload(
-    session: Session,
-    batch_id: int,
-    all_states: list[KpovState],
-    station: str | None,
-    line: str | None,
-    view: str,
-    attribute: str | None = None,
-    target: str | None = None,
-) -> dict:
-    scoped, _ = apply_filters(session, batch_id, all_states, station, line, attribute, target)
-    current = summarize(scoped, view)
-    baseline = summarize(scoped, "baseline")
-    return {
-        "bars": [
-            {
-                "level": level,
-                "count": current[f"level{level}"],
-                "baselineCount": baseline[f"level{level}"],
-                "color": LEVEL_COLORS[level],
-            }
-            for level in range(4)
-        ],
-        "unrated": current["unrated"],
-        "total": current["total"],
     }
 
 

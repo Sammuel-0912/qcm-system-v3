@@ -34,6 +34,9 @@ def client():
     with TestClient(fastapi_app) as c:
         yield c
     close_all_sessions()
+    # engine 是模組層級、跨測試檔共用；不清掉的話，最後匯入的批次會成為
+    # 後續測試檔（例如 test_lifecycle）的「前一批次」而被合併進去
+    Base.metadata.drop_all(engine)
 
 
 def test_device_crud(client):
@@ -199,3 +202,64 @@ def test_equipment_options_come_from_active_batch(client):
     assert "OT00420118" in codes
     # OP 站沒有設備代碼，不該出現在下拉中
     assert None not in codes
+
+
+V2 = RAW.parent / "數據庫-1008.xlsx"
+
+
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+def test_item_inspection_feeds_check_monitor(client):
+    with V2.open("rb") as fh:
+        imported = client.post(
+            "/api/v1/import",
+            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    assert imported.status_code == 200, imported.text
+
+    monitor = client.get("/api/v1/check-monitor").json()
+    assert monitor["summary"]["total"] == len(monitor["items"]) > 0
+    assert {r["status"] for r in monitor["items"]} == {"never"}
+
+    client.post("/api/ar/devices", json={"marker_id": 7, "name": "鎖PWB", "equipment_code": "OT00420112"})
+    items = client.get("/api/ar/devices/7/check-items").json()["items"]
+    assert len(items) == 3
+    target = items[0]
+    created = client.post(
+        "/api/ar/inspections",
+        json={
+            "marker_id": 7,
+            "status": "warn",
+            "kpov_no": target["kpovNo"],
+            "check_content": target["checkContent"],
+        },
+    )
+    assert created.status_code == 201
+
+    rows = client.get("/api/v1/check-monitor", params={"target": "equip:OT00420112"}).json()["items"]
+    assert len(rows) == 3
+    assert {r["id"]: r["status"] for r in rows}[target["id"]] == "warn"
+
+    # 未綁設備代碼的 AR 設備不能逐項點檢
+    client.post("/api/ar/devices", json={"marker_id": 8, "name": "未綁定"})
+    bad = client.post(
+        "/api/ar/inspections", json={"marker_id": 8, "status": "ok", "kpov_no": "K1", "check_content": "x"}
+    )
+    assert bad.status_code == 400
+
+
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+def test_history_includes_pcn_and_plant_wide_ecn(client):
+    with V2.open("rb") as fh:
+        client.post(
+            "/api/v1/import",
+            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    body = client.get("/api/v1/kpov/K00002/OT00420102/history").json()
+    kinds = [c["kind"] for c in body["changes"]]
+    assert kinds.count("PCN") == 1 and kinds.count("ECN") == 1
+    pcn = next(c for c in body["changes"] if c["kind"] == "PCN")
+    assert (pcn["levelBefore"], pcn["levelAfter"]) == ("Level 3", "Level 1")
+
+    # OP 站也看得到全廠 ECN
+    op = client.get("/api/v1/kpov/K00048/A0001/history").json()
+    assert [c["kind"] for c in op["changes"]] == ["ECN"]

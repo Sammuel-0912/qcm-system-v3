@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { arApi, type ArDevice, type DeviceQuality } from '../api/arClient'
+import type { CheckMonitorRow, CheckStatus } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
 
 // 以 ?url 取得套件預建檔的位址：Vite 會原樣複製到 dist/assets 並加 hash，不經 bundler 解析。
@@ -15,6 +16,13 @@ const QR_AUTO_DETECT_DELAY_MS = 600
 const MARKER_LOST_DELAY_MS = 2500
 const FEEDBACK_DURATION_MS = 1800
 const SCENE_ID = 'ar-scene-dynamic'
+
+const CHECK_STATUS: Record<CheckStatus, { label: string; className: string }> = {
+  ok: { label: '正常', className: 'bg-emerald-100 text-emerald-800' },
+  warn: { label: '異常', className: 'bg-red-100 text-red-700' },
+  overdue: { label: '逾期', className: 'bg-amber-100 text-amber-800' },
+  never: { label: '未點檢', className: 'bg-slate-100 text-slate-600' },
+}
 
 // AR.js 與 A-Frame 執行時還會各抓一個外部檔案，套件本身沒有附：
 //   AR.js  -> https://ar-js-org.github.io/.../camera_para.dat（相機校正，沒有它就偵測不到 marker）
@@ -74,6 +82,10 @@ export default function ArInspectPage() {
   const [scriptsReady, setScriptsReady] = useState(false)
   const [activeDevice, setActiveDevice] = useState<ArDevice | null>(null)
   const [quality, setQuality] = useState<DeviceQuality | null>(null)
+  // 高風險項（Level 3）點檢項目；有項目時改為逐項點檢
+  const [checkItems, setCheckItems] = useState<CheckMonitorRow[]>([])
+  const checkItemsRef = useRef<CheckMonitorRow[]>([])
+  checkItemsRef.current = checkItems
   const [sheetOpen, setSheetOpen] = useState(false)
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'error'; msg: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -104,13 +116,20 @@ export default function ArInspectPage() {
     setFeedback(null)
     setBusy(false)
     setQuality(null)
+    setCheckItems([])
     // 掃到就順便抓這台機器的品控力狀態——點檢當下看得到它的等級，才是整合的意義
     arApi.deviceQuality(id).then(setQuality).catch(() => setQuality(null))
+    arApi
+      .checkItems(id)
+      .then((r) => setCheckItems(r.items))
+      .catch(() => setCheckItems([]))
   }, [])
 
   const onMarkerLost = useCallback(() => {
     if (qrMode) return
     setTimeout(() => {
+      // 逐項點檢時要邊看設備邊按，鏡頭移開不關面板，改由「完成」按鈕關閉
+      if (checkItemsRef.current.length > 0) return
       if (markerIdRef.current !== null) {
         markerIdRef.current = null
         setSheetOpen(false)
@@ -207,6 +226,28 @@ export default function ArInspectPage() {
       { once: true },
     )
   }, [onMarkerFound, onMarkerLost])
+
+  async function submitItem(item: CheckMonitorRow, status: 'ok' | 'warn') {
+    const markerId = markerIdRef.current
+    if (submitting.current || markerId === null) return
+    submitting.current = true
+    setBusy(true)
+    try {
+      await arApi.inspect(markerId, status, { kpovNo: item.kpovNo, checkContent: item.checkContent })
+      setFeedback({
+        type: 'ok',
+        msg: `已記錄「${item.checkContent}」：${status === 'ok' ? '正常' : '異常'}`,
+      })
+      // 逐項點檢不自動關閉：一台設備有多個項目，要全部點完
+      const refreshed = await arApi.checkItems(markerId)
+      setCheckItems(refreshed.items)
+    } catch (err) {
+      setFeedback({ type: 'error', msg: err instanceof Error ? err.message : '上傳失敗' })
+    } finally {
+      setBusy(false)
+      submitting.current = false
+    }
+  }
 
   async function submit(status: 'ok' | 'warn') {
     if (submitting.current || markerIdRef.current === null) return
@@ -385,6 +426,62 @@ export default function ArInspectPage() {
             </div>
           )}
 
+          {checkItems.length > 0 ? (
+            <div className="mt-4">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Level 3 點檢項目
+                <span className="ml-2 text-xs font-normal text-slate-500">
+                  {checkItems.filter((i) => i.status === 'ok').length}/{checkItems.length} 已於時限內完成
+                </span>
+              </h3>
+              <ul className="mt-2 space-y-2">
+                {checkItems.map((item) => (
+                  <li key={item.id} className="rounded-md border border-slate-200 p-3">
+                    <div className="flex items-start gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-slate-800">{item.checkContent}</p>
+                        <p className="mt-0.5 text-xs text-slate-400">
+                          {item.kpovName} {item.kpovNo} · {item.frequency ?? `${item.intervalHours}h/次`}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold ${CHECK_STATUS[item.status].className}`}
+                      >
+                        {CHECK_STATUS[item.status].label}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => void submitItem(item, 'ok')}
+                        disabled={busy}
+                        className="rounded-md bg-emerald-600 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-40"
+                      >
+                        正常
+                      </button>
+                      <button
+                        onClick={() => void submitItem(item, 'warn')}
+                        disabled={busy}
+                        className="rounded-md bg-amber-500 py-2 text-sm font-semibold text-white transition hover:bg-amber-600 disabled:opacity-40"
+                      >
+                        異常
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <button
+                onClick={() => {
+                  setSheetOpen(false)
+                  setCheckItems([])
+                  setFeedback(null)
+                  markerIdRef.current = null
+                }}
+                className="mt-3 w-full rounded-md border border-slate-300 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                完成，繼續掃描
+              </button>
+            </div>
+          ) : (
           <div className="mt-4 grid grid-cols-2 gap-3">
             <button
               onClick={() => void submit('ok')}
@@ -401,6 +498,7 @@ export default function ArInspectPage() {
               異常
             </button>
           </div>
+          )}
         </div>
       )}
     </div>

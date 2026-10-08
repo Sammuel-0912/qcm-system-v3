@@ -11,13 +11,13 @@ from sqlalchemy.orm import Session
 
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
-from ...models import DimEquipment, FactLevelEvent, FactRepair, ImportBatch
+from ...models import DimEquipment, FactChangeRecord, FactLevelEvent, FactRepair, ImportBatch
+from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
     active_batch,
     apply_filters,
-    bar_payload,
     quadrant_payload,
     trend_payload,
 )
@@ -108,21 +108,6 @@ def get_quadrant(
     payload = quadrant_payload(session, batch.id, states, station, line, view, attribute, target)
     payload["batch"] = _batch_info(batch)
     return payload
-
-
-@router.get("/levels/bar")
-def get_bar(
-    view: str = Query("current"),
-    station: str | None = None,
-    line: str | None = None,
-    attribute: str | None = None,
-    target: str | None = None,
-    session: Session = Depends(get_session),
-):
-    _check_view(view)
-    batch = _batch_or_404(session)
-    states = build_states(session, batch.id)
-    return bar_payload(session, batch.id, states, station, line, view, attribute, target)
 
 
 @router.get("/trend")
@@ -266,9 +251,74 @@ def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(g
             }
             for e in match.events
         ],
+        "changes": _change_records(session, batch.id, match.kpov),
         "current": {"level": match.level_current},
         "target": {"level": match.level_target},
     }
+
+
+def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
+    """該 KPOV 的 PCN / ECN 變更紀錄，只供時間軸顯示，不影響等級計算。
+
+    PCN 以 (KPOV 編號, 設備ID) 對應；ECN 若影響站別與設備ID 皆為 NA 視為全廠，
+    否則依設備ID 或站別對應。
+    """
+    records = session.scalars(
+        select(FactChangeRecord)
+        .where(FactChangeRecord.batch_id == batch_id)
+        .order_by(FactChangeRecord.effective_at, FactChangeRecord.id)
+    ).all()
+    out = []
+    for r in records:
+        if r.kind == "PCN":
+            if r.kpov_no != kpov.kpov_no or r.equipment_code != kpov.equipment_code:
+                continue
+        else:
+            plant_wide = not r.equipment_code and not r.station
+            hits = (r.equipment_code and r.equipment_code == kpov.equipment_code) or (
+                r.station and r.station == kpov.station
+            )
+            if not plant_wide and not hits:
+                continue
+            if r.kpov_no and r.kpov_no != kpov.kpov_no:
+                continue
+        out.append(
+            {
+                "kind": r.kind,
+                "effectiveAt": r.effective_at.isoformat() if r.effective_at else None,
+                "ecnNo": r.ecn_no,
+                "content": r.content,
+                "station": r.station,
+                "plantWide": r.kind == "ECN" and not r.equipment_code and not r.station,
+                "smallYBefore": r.small_y_before,
+                "bigYBefore": r.big_y_before,
+                "levelBefore": r.level_before,
+                "smallYAfter": r.small_y_after,
+                "bigYAfter": r.big_y_after,
+                "levelAfter": r.level_after,
+            }
+        )
+    return out
+
+
+@router.get("/check-monitor")
+def get_check_monitor(
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Level 3 高風險項點檢監控：點檢項目 × AR 逐項點檢最新結果。"""
+    batch = _batch_or_404(session)
+    codes: set[str] | None = None
+    if station or line or attribute or target:
+        states = build_states(session, batch.id)
+        scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
+        codes = {s.kpov.equipment_code for s in scoped if s.kpov.equipment_code}
+    rows = monitor_rows(session, check_items(session, batch.id, codes))
+    rows.sort(key=lambda r: (r["station"] or "", r["kpovNo"] or "", r["checkContent"] or ""))
+    return {"items": rows, "summary": summarize_rows(rows), "shift": shift_payload()}
 
 
 @router.get("/events")

@@ -1,6 +1,8 @@
 // AR 點檢 API。與品控力同源，固定走 /api/ar——
 // 原專案的 resolveBackendUrl() 會組出 http://<hostname>:8000 這種跨來源位址，
 // 合併為單一服務後不再需要（ar-integration-spec.md REQ-API-03）。
+import type { CheckMonitorRow } from './client'
+
 const BASE = '/api/ar'
 
 export type ArDevice = {
@@ -19,6 +21,8 @@ export type ArInspectionRow = {
   deviceName: string
   status: 'ok' | 'warn'
   inspectedAt: string
+  kpovNo: string | null
+  checkContent: string | null
 }
 
 export type ArStat = {
@@ -121,12 +125,20 @@ export const arApi = {
     })
   },
 
-  inspect: (markerId: number, status: 'ok' | 'warn') =>
+  /** item 有值 = 逐項點檢（高風險項點檢）；不帶 = 整台設備點檢 */
+  inspect: (markerId: number, status: 'ok' | 'warn', item?: { kpovNo: string | null; checkContent: string }) =>
     request<{ id: number; inspectedAt: string }>('/inspections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ marker_id: markerId, status }),
+      body: JSON.stringify({
+        marker_id: markerId,
+        status,
+        ...(item && { kpov_no: item.kpovNo, check_content: item.checkContent }),
+      }),
     }),
+
+  checkItems: (markerId: number) =>
+    request<{ equipmentCode: string | null; items: CheckMonitorRow[] }>(`/devices/${markerId}/check-items`),
 
   results: (p: { markerId?: number; start?: string; end?: string } = {}) =>
     request<{ total: number; items: ArInspectionRow[] }>(
