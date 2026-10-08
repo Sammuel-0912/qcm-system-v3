@@ -86,3 +86,13 @@ DETECTION_THRESHOLD = 5
 # 讓前端的 nginx 以單一 /api/ 規則轉發，不必為靜態檔另開規則。
 AR_UPLOAD_DIR = DATA_DIR / "ar-uploads"
 AR_UPLOAD_URL_PREFIX = "/api/ar/uploads"
+
+
+# ---------------------------------------------------------------------------
+# 高風險項點檢班別
+# ---------------------------------------------------------------------------
+# 資料庫一律存 UTC；班別以廠區當地時間切分。預設 UTC+8，
+# 部署在其他時區的廠區以 QCM_SITE_UTC_OFFSET 調整。
+SITE_UTC_OFFSET_HOURS = float(os.getenv("QCM_SITE_UTC_OFFSET", "8"))
+# (班別名稱, 開始時, 時長小時)。夜班跨午夜。兩班之間的空檔顯示剛結束的那一班。
+CHECK_SHIFTS: tuple[tuple[str, int, int], ...] = (("日班", 8, 10), ("夜班", 20, 10))

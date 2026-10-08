@@ -29,12 +29,6 @@ export type QuadrantResponse = {
   batch: BatchInfo
 }
 
-export type BarResponse = {
-  bars: { level: number; count: number; baselineCount: number; color: string }[]
-  unrated: number
-  total: number
-}
-
 export type StationOption = {
   attribute: string
   code: string
@@ -120,6 +114,64 @@ export type RepairDetail = {
   improvement: string | null
 }
 
+/** PCN / ECN 變更紀錄：只顯示在時間軸，不影響等級計算 */
+export type ChangeRecord = {
+  kind: 'PCN' | 'ECN'
+  effectiveAt: string | null
+  ecnNo: string | null
+  content: string | null
+  station: string | null
+  plantWide: boolean
+  smallYBefore: string | null
+  bigYBefore: string | null
+  levelBefore: string | null
+  smallYAfter: string | null
+  bigYAfter: string | null
+  levelAfter: string | null
+}
+
+export type CheckStatus = 'ok' | 'warn' | 'overdue' | 'never'
+
+export type SlotState = 'ok' | 'warn' | 'missed' | 'current' | 'upcoming'
+
+export type CheckSlot = { start: string; end: string; state: SlotState; inspectedAt: string | null }
+
+export type CheckShift = { name: string; label: string; start: string; end: string; ended: boolean }
+
+export type CheckMonitorRow = {
+  id: number
+  station: string | null
+  attribute: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  kpovName: string | null
+  level: string | null
+  checkContent: string
+  frequency: string | null
+  intervalHours: number
+  status: CheckStatus
+  lastResult: 'ok' | 'warn' | null
+  lastInspectedAt: string | null
+  nextDueAt: string | null
+  overdue: boolean
+  /** 本班各時段（2 小時一格），每格完成 = 一格進度 */
+  slots: CheckSlot[]
+  completed: number
+  progress: number
+  count24h: number
+}
+
+export type CheckMonitorResponse = {
+  items: CheckMonitorRow[]
+  summary: Record<CheckStatus, number> & {
+    total: number
+    progress: number
+    missedSlots: number
+    warnSlots: number
+  }
+  shift: CheckShift
+}
+
 export type HistoryResponse = {
   kpovNo: string
   kpovName: string
@@ -143,6 +195,7 @@ export type HistoryResponse = {
     repairSerial: string | null
     repair: RepairDetail | null
   }[]
+  changes?: ChangeRecord[]
   current: { level: number | null }
   target: { level: number | null }
 }
@@ -168,7 +221,7 @@ type Scope = { station?: string; line?: string; attribute?: string; target?: str
 export const api = {
   filters: () => get<FiltersResponse>('/filters'),
   quadrant: (p: Scope & { view: string }) => get<QuadrantResponse>('/quadrant', p),
-  bar: (p: Scope & { view: string }) => get<BarResponse>('/levels/bar', p),
+  checkMonitor: (p: Scope) => get<CheckMonitorResponse>('/check-monitor', p),
   trend: (p: Scope) => get<TrendResponse>('/trend', p),
   kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string }) =>
     get<{ total: number; items: KpovItem[] }>('/kpov', p),

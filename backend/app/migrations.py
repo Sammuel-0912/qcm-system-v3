@@ -90,6 +90,36 @@ def _migrate_sqlite(engine: Engine) -> None:
         conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
+# 後來新增、皆可空的欄位：(表, 欄位, 型別)。既有資料庫以 ADD COLUMN 補上。
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("fact_kpov", "station_group", "TEXT"),
+    ("fact_alarm", "source", "TEXT"),
+    ("fact_alarm", "kpov_name", "TEXT"),
+    ("fact_alarm", "kpov_no", "TEXT"),
+    ("fact_alarm", "serial_no", "TEXT"),
+    ("fact_repair", "station", "TEXT"),
+    ("ar_inspection", "equipment_code", "TEXT"),
+    ("ar_inspection", "kpov_no", "TEXT"),
+    ("ar_inspection", "check_content", "TEXT"),
+)
+
+
+def _add_missing_columns(engine: Engine) -> list[str]:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    applied: list[str] = []
+    for table, column, sql_type in ADDED_COLUMNS:
+        if table not in tables:
+            continue
+        existing = {c["name"] for c in inspect(engine).get_columns(table)}
+        if column in existing:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+        applied.append(f"{table}.{column} 新增欄位")
+    return applied
+
+
 def ensure_schema(engine: Engine) -> list[str]:
     """把既有資料庫補到目前的結構。回傳做過的動作，供啟動時記錄。"""
     applied: list[str] = []
@@ -116,6 +146,9 @@ def ensure_schema(engine: Engine) -> list[str]:
                     )
                 )
             applied.append(f"唯一鍵 {OLD_UNIQUE} -> {NEW_UNIQUE}")
+
+    # 必須在 fact_kpov 重建之後：重建用的是固定的舊欄位清單
+    applied.extend(_add_missing_columns(engine))
 
     for action in applied:
         log.warning("結構遷移：%s", action)

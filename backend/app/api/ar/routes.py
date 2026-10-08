@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX
 from ...db import get_session
 from ...models import ArDevice, ArInspection, DimEquipment, FactKpov
+from ...services.check_monitor import check_items, monitor_rows
 from ...services.lifecycle import build_states
 from ...services.query import active_batch
 
@@ -59,6 +60,9 @@ class DeviceUpdate(BaseModel):
 class InspectionCreate(BaseModel):
     marker_id: int = Field(ge=0, le=MAX_MARKER_ID)
     status: str = Field(pattern="^(ok|warn)$")
+    # 逐項點檢（高風險項點檢）時帶入；皆不帶 = 整台設備點檢
+    kpov_no: Optional[str] = None
+    check_content: Optional[str] = None
 
 
 def _device_out(d: ArDevice) -> dict:
@@ -161,8 +165,14 @@ def upload_device_image(
 
 @router.post("/inspections", status_code=201)
 def create_inspection(data: InspectionCreate, session: Session = Depends(get_session)):
-    _get_device(session, data.marker_id)  # 不存在就 404，避免孤兒紀錄
+    device = _get_device(session, data.marker_id)  # 不存在就 404，避免孤兒紀錄
     record = ArInspection(marker_id=data.marker_id, status=data.status)
+    if data.check_content:
+        if not device.equipment_code:
+            raise HTTPException(status_code=400, detail="此設備尚未綁定設備代碼，無法逐項點檢")
+        record.equipment_code = device.equipment_code
+        record.kpov_no = data.kpov_no
+        record.check_content = data.check_content.strip()
     session.add(record)
     session.commit()
     return {
@@ -170,7 +180,20 @@ def create_inspection(data: InspectionCreate, session: Session = Depends(get_ses
         "markerId": record.marker_id,
         "status": record.status,
         "inspectedAt": record.inspected_at.isoformat(),
+        "kpovNo": record.kpov_no,
+        "checkContent": record.check_content,
     }
+
+
+@router.get("/devices/{marker_id}/check-items")
+def device_check_items(marker_id: int, session: Session = Depends(get_session)):
+    """該設備的高風險項（Level 3）點檢項目與目前執行狀況，供 AR 逐項點檢。"""
+    device = _get_device(session, marker_id)
+    batch = active_batch(session)
+    if not device.equipment_code or batch is None:
+        return {"equipmentCode": device.equipment_code, "items": []}
+    items = check_items(session, batch.id, {device.equipment_code})
+    return {"equipmentCode": device.equipment_code, "items": monitor_rows(session, items)}
 
 
 @router.get("/results")
@@ -203,6 +226,8 @@ def list_results(
                 "deviceName": name or "（已刪除）",
                 "status": rec.status,
                 "inspectedAt": rec.inspected_at.isoformat(),
+                "kpovNo": rec.kpov_no,
+                "checkContent": rec.check_content,
             }
             for rec, name in rows
         ],
@@ -385,13 +410,16 @@ def export_report(session: Session = Depends(get_session)):
     wb = Workbook()
     ws = wb.active
     ws.title = "點檢紀錄"
-    ws.append(["紀錄編號", "Marker ID", "設備名稱", "狀態", "點檢時間"])
+    ws.append(["紀錄編號", "Marker ID", "設備名稱", "設備代碼", "KPOV 編號", "點檢內容", "狀態", "點檢時間"])
     for rec, name in rows:
         ws.append(
             [
                 rec.id,
                 rec.marker_id,
                 name or "（已刪除）",
+                rec.equipment_code,
+                rec.kpov_no,
+                rec.check_content or "（整台點檢）",
                 "正常" if rec.status == "ok" else "異常",
                 rec.inspected_at.strftime("%Y-%m-%d %H:%M:%S"),
             ]

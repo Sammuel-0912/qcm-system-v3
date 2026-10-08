@@ -112,6 +112,8 @@ class FactKpov(Base):
     process_unit_zh: Mapped[str | None] = mapped_column(Text)
     process_unit_en: Mapped[str | None] = mapped_column(Text)
     station: Mapped[str] = mapped_column(Text, nullable=False)
+    # 新版 KPOV 庫的第一個「站別」欄：站位（輔線 / 自動1 / 人工1 …）
+    station_group: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(Text)
     kpov_name: Mapped[str] = mapped_column(Text, nullable=False)
     kpov_no: Mapped[str | None] = mapped_column(Text)
@@ -154,6 +156,11 @@ class FactAlarm(Base):
     breakdown_desc: Mapped[str | None] = mapped_column(Text)
     alarm_subcategory: Mapped[str | None] = mapped_column(Text)
     alarm_content: Mapped[str | None] = mapped_column(Text)
+    # 鎖附 / 塗覆 / legacy（舊版單一告警表）
+    source: Mapped[str | None] = mapped_column(Text)
+    kpov_name: Mapped[str | None] = mapped_column(Text)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+    serial_no: Mapped[str | None] = mapped_column(Text)
 
 
 class FactRepair(Base):
@@ -179,6 +186,7 @@ class FactRepair(Base):
     countermeasure: Mapped[str | None] = mapped_column(Text)
     responsible_dept: Mapped[str | None] = mapped_column(Text)
     remark: Mapped[str | None] = mapped_column(Text)
+    station: Mapped[str | None] = mapped_column(Text)
     equipment_code: Mapped[str | None] = mapped_column(Text)
     kpov_no: Mapped[str | None] = mapped_column(Text)
     # 「變化後」
@@ -239,6 +247,65 @@ class FactLevelEvent(Base):
     repair: Mapped[FactRepair | None] = relationship(back_populates="events")
 
 
+CHANGE_KINDS = ("PCN", "ECN")
+
+
+class FactChangeRecord(Base):
+    """PCN / ECN 變更紀錄。只供 KPOV 時間軸顯示，不參與等級計算。
+
+    偵測欄位刻意存成文字：PCN 填的是分數（7），ECN 可能填偵測方式名稱。
+    ECN 的影響站別、設備ID 常為 NA，代表全廠適用。
+    """
+
+    __tablename__ = "fact_change_record"
+    __table_args__ = (
+        CheckConstraint(f"kind IN {CHANGE_KINDS}", name="ck_change_kind"),
+        Index("ix_change_target", "batch_id", "kpov_no", "equipment_code"),
+    )
+
+    id: Mapped[int] = _pk()
+    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batch.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    effective_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    ecn_no: Mapped[str | None] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
+    station: Mapped[str | None] = mapped_column(Text)
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    kpov_name: Mapped[str | None] = mapped_column(Text)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+    small_y_before: Mapped[str | None] = mapped_column(Text)
+    big_y_before: Mapped[str | None] = mapped_column(Text)
+    level_before: Mapped[str | None] = mapped_column(Text)
+    small_y_after: Mapped[str | None] = mapped_column(Text)
+    big_y_after: Mapped[str | None] = mapped_column(Text)
+    level_after: Mapped[str | None] = mapped_column(Text)
+
+
+class FactCheckItem(Base):
+    """高風險項（Level 3）點檢項目，來源為「高風險項點檢」工作表。
+
+    點檢結果不存這裡：AR 點檢紀錄是連續累積的營運資料，以
+    (設備代碼, KPOV 編號, 點檢內容) 自然鍵對到這裡的項目，跨批次不斷裂。
+    """
+
+    __tablename__ = "fact_check_item"
+    __table_args__ = (Index("ix_check_item_equipment", "batch_id", "equipment_code"),)
+
+    id: Mapped[int] = _pk()
+    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batch.id", ondelete="CASCADE"), nullable=False)
+    station: Mapped[str | None] = mapped_column(Text)
+    attribute1: Mapped[str | None] = mapped_column(Text)
+    kpov_name: Mapped[str | None] = mapped_column(Text)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    small_y_score: Mapped[int | None] = mapped_column(SmallInteger)
+    big_y_score: Mapped[int | None] = mapped_column(SmallInteger)
+    level_source: Mapped[str | None] = mapped_column(Text)
+    check_content: Mapped[str] = mapped_column(Text, nullable=False)
+    frequency: Mapped[str | None] = mapped_column(Text)
+    interval_hours: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False, default=2)
+
+
 # ---------------------------------------------------------------------------
 # AR 設備點檢（整合自 webXR-test，見 ar-integration-spec.md §6）
 # ---------------------------------------------------------------------------
@@ -296,5 +363,9 @@ class ArInspection(Base):
     inspected_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
     )
+    # 逐項點檢（高風險項點檢）：以自然鍵對到 fact_check_item；三者皆空 = 整台設備點檢
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+    check_content: Mapped[str | None] = mapped_column(Text)
 
     device: Mapped[ArDevice] = relationship(back_populates="inspections")

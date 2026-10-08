@@ -5,7 +5,7 @@ import { AppShell } from '../components/AppShell'
 
 import {
   api,
-  type BarResponse,
+  type CheckMonitorResponse,
   type EventsResponse,
   type FiltersResponse,
   type HistoryResponse,
@@ -15,11 +15,11 @@ import {
 } from '../api/client'
 import { VIEW_LABELS } from '../constants'
 import { HOTSPOTS } from '../layoutConfig'
+import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
 import { LayoutMap } from '../components/LayoutMap'
-import { LevelBarChart } from '../components/LevelBarChart'
 import { LevelTimeline } from '../components/LevelTimeline'
 import { MultiSelect } from '../components/MultiSelect'
 import { QuadrantChart } from '../components/QuadrantChart'
@@ -60,7 +60,7 @@ export default function QualityPage() {
   const [filters, setFilters] = useState<FiltersResponse | null>(null)
   const [quadrant, setQuadrant] = useState<QuadrantResponse | null>(null)
   const [events, setEvents] = useState<EventsResponse | null>(null)
-  const [bar, setBar] = useState<BarResponse | null>(null)
+  const [checks, setChecks] = useState<CheckMonitorResponse | null>(null)
   const [trend, setTrend] = useState<TrendResponse | null>(null)
   const [selectedLevel, setSelectedLevel] = useState<number | null>(null)
   const [kpovList, setKpovList] = useState<{ total: number; items: KpovItem[] } | null>(null)
@@ -100,23 +100,27 @@ export default function QualityPage() {
     }
   }, [state.view, station, line, attribute])
 
-  // 下半部（趨勢 + 現狀）吃 layout 選取；未選時沿用上方篩選範圍
+  // 下半部（趨勢 + 點檢監控）吃 layout 選取；未選時沿用上方篩選範圍
+  const bottomScope = useMemo(
+    () => (state.target ? { target: state.target } : { station, line, attribute }),
+    [state.target, station, line, attribute],
+  )
+
   const loadBottom = useCallback(async () => {
-    const scope = state.target
-      ? { target: state.target }
-      : { station, line, attribute }
     try {
-      const [b, t] = await Promise.all([
-        api.bar({ view: state.view, ...scope }),
-        api.trend(scope),
-      ])
-      setBar(b)
-      setTrend(t)
+      setTrend(await api.trend(bottomScope))
     } catch {
-      setBar(null)
       setTrend(null)
     }
-  }, [state.target, state.view, station, line, attribute])
+  }, [bottomScope])
+
+  const loadChecks = useCallback(async () => {
+    try {
+      setChecks(await api.checkMonitor(bottomScope))
+    } catch {
+      setChecks(null)
+    }
+  }, [bottomScope])
 
   useEffect(() => {
     void loadTop()
@@ -125,6 +129,13 @@ export default function QualityPage() {
   useEffect(() => {
     void loadBottom()
   }, [loadBottom, reloadKey])
+
+  // 點檢狀況會隨 AR 點檢與時間（逾期）變化，每分鐘重抓
+  useEffect(() => {
+    void loadChecks()
+    const timer = window.setInterval(() => void loadChecks(), 60_000)
+    return () => window.clearInterval(timer)
+  }, [loadChecks, reloadKey])
 
   useEffect(() => {
     if (selectedLevel === null) {
@@ -290,27 +301,13 @@ export default function QualityPage() {
           />
         </section>
 
-        {/* ── 下層：趨勢折線圖 + 現狀柱狀圖 ── */}
+        {/* ── 下層：趨勢折線圖 + Level 3 點檢監控 ── */}
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-lg border border-slate-200 bg-white p-4">
             {trend && <TrendChart data={trend} scopeLabel={scopeLabel} />}
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <h2 className="mb-3 text-base font-semibold text-slate-800">
-              Level 等級現狀
-              <span className="ml-2 text-sm font-normal text-slate-500">
-                {scopeLabel} · {VIEW_LABELS[state.view]}口徑
-                {bar ? ` · 共 ${bar.total} 項` : ''}
-              </span>
-            </h2>
-            {bar && (
-              <LevelBarChart
-                data={bar}
-                view={state.view}
-                onSelect={setSelectedLevel}
-                scopeLabel={scopeLabel}
-              />
-            )}
+            <CheckMonitorTable data={checks} scopeLabel={scopeLabel} />
           </div>
         </section>
       </main>

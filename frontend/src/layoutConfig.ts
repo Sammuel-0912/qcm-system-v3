@@ -7,7 +7,8 @@
 //   「鎖保險絲」，現場實際是「鎖銅排3」；OT00420108 在庫裡是「鎖軟銅排」，
 //   現場是「鎖Fuse」）。設備代碼才是穩定的唯一權威，所以 CTP 熱區一律綁
 //   `equip:<設備代碼>`，顯示則走 displayName（現場名稱）。
-//   OP 站沒有設備代碼，只能綁 `op:<站別>`。
+//   OP 人工站自 1008 版數據庫起也有設備代碼（「設備對應參考」的 A0001–A0008），
+//   同樣綁 `equip:<設備代碼>`。
 //
 // confidence:
 //   'confirmed' = 名稱與位置都對得上，可直接用
@@ -135,9 +136,9 @@ export const HOTSPOTS: Hotspot[] = [
     note: 'layout 無文字標籤；下方副線由左數來第三格，即輔綫自動鎖付右邊一格（現場確認）',
   },
 
-  // ---------- OP（綁站別，無設備代碼） ----------
+  // ---------- OP 人工站（設備代碼來自「設備對應參考」） ----------
   {
-    targetId: 'op:插線/理線',
+    targetId: 'equip:A0001',
     displayName: '插線/理線',
     kpovStation: '插線/理線',
     kind: 'OP',
@@ -146,9 +147,9 @@ export const HOTSPOTS: Hotspot[] = [
     note: 'layout 標籤：插線&理線',
   },
   {
-    targetId: 'op:固定絕緣片',
-    displayName: '固定絕緣片',
-    kpovStation: '固定絕緣片',
+    targetId: 'equip:A0007',
+    displayName: '固定絕緣片/PWB板',
+    kpovStation: '固定絕緣片/PWB板',
     kind: 'OP',
     rect: { x: 40.55, y: 64.38, w: 13.71, h: 5.62 },
     confidence: 'confirmed',
@@ -157,6 +158,10 @@ export const HOTSPOTS: Hotspot[] = [
 ]
 
 export const UNPLACED_TARGETS = [
-  { targetId: 'op:鎖後蓋', displayName: '鎖後蓋', reason: '依指示暫不放熱區' },
-  { targetId: 'op:鎖銅排', displayName: '鎖銅排（人工）', reason: 'layout 位置待確認' },
+  { targetId: 'equip:A0002', displayName: '固定散熱片（人工二）', reason: 'layout 位置待確認' },
+  { targetId: 'equip:A0003', displayName: '鎖後蓋（人工三）', reason: '依指示暫不放熱區' },
+  { targetId: 'equip:A0004', displayName: '固定銅排/ 電感（人工四）', reason: 'layout 位置待確認' },
+  { targetId: 'equip:A0005', displayName: '固定保險絲/軟銅排（人工五）', reason: 'layout 位置待確認' },
+  { targetId: 'equip:A0006', displayName: '軟銅排1（人工六）', reason: 'layout 位置待確認' },
+  { targetId: 'equip:A0008', displayName: '鎖PWB板（人工八）', reason: 'layout 位置待確認' },
 ]

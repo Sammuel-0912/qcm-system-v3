@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,8 @@ from ..models import (
     DimEquipment,
     DimErrorCode,
     FactAlarm,
+    FactChangeRecord,
+    FactCheckItem,
     FactKpov,
     FactRepair,
     ImportBatch,
@@ -156,13 +159,22 @@ def _match_header(header_name: str, column_map: dict[str, str]) -> str | None:
     return best
 
 
-def _read_table(sheet, column_map: dict[str, str], required: tuple[str, ...], role: str):
-    """讀出 (欄位索引, 資料列, 表頭)。表頭以名稱對應，缺必要欄位即拋錯。"""
-    rows = list(sheet.iter_rows(values_only=True))
-    if not rows:
-        raise ImportError_(f"工作表「{sheet.title}」是空的")
-    header = [M.normalize(cell) for cell in rows[0]]
+_HEADER_SCAN_ROWS = 5
 
+
+def _map_header(
+    header: list[str],
+    column_map: dict[str, str],
+    duplicates: dict[str, str] | None,
+    paired: tuple[str, ...],
+) -> tuple[dict[str, int], set[str]]:
+    """把一列表頭對應成 {欄位: 索引}。
+
+    duplicates：{欄位: 前一個出現者改名為}。同名表頭出現多次時，最後一個取得原欄位，
+        較早出現者改名（新版 KPOV 庫有兩個「站別」：第一個是站位，最後一個才是原站別）。
+    paired：同名欄位依出現順序分成 `<欄位>_before`、`<欄位>_after`（PCN/ECN 切入前後）。
+    其餘欄位重複出現時，第一個勝出。
+    """
     field_index: dict[str, int] = {}
     matched_specs: set[str] = set()
     for i, name in enumerate(header):
@@ -172,16 +184,49 @@ def _read_table(sheet, column_map: dict[str, str], required: tuple[str, ...], ro
         if spec is None:
             continue
         field = column_map[spec]
-        if field in field_index:
-            continue  # 同一欄位重複出現，第一個勝出
-        field_index[field] = i
         matched_specs.add(spec)
+        if field in paired:
+            slot = f"{field}_before" if f"{field}_before" not in field_index else f"{field}_after"
+            field_index.setdefault(slot, i)
+            continue
+        if field in field_index:
+            if duplicates and field in duplicates:
+                field_index[duplicates[field]] = field_index[field]
+                field_index[field] = i
+            continue
+        field_index[field] = i
+    return field_index, matched_specs
 
-    missing = [col for col in required if col not in matched_specs]
-    if missing:
-        raise ImportError_(f"工作表「{sheet.title}」缺少必要欄位：{'、'.join(missing)}")
 
-    return field_index, rows[1:], header
+def _read_table(
+    sheet,
+    column_map: dict[str, str],
+    required: tuple[str, ...],
+    role: str,
+    *,
+    duplicates: dict[str, str] | None = None,
+    paired: tuple[str, ...] = (),
+):
+    """讀出 (欄位索引, 資料列, 表頭)。表頭以名稱對應，缺必要欄位即拋錯。
+
+    表頭不一定在第一列（新版「鎖附設備告警」、PCN/ECN 上方有空白列或分組標題），
+    因此在前幾列中取第一個具備全部必要欄位的列當表頭。
+    """
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise ImportError_(f"工作表「{sheet.title}」是空的")
+
+    best_missing: list[str] | None = None
+    for header_row in range(min(_HEADER_SCAN_ROWS, len(rows))):
+        header = [M.normalize(cell) for cell in rows[header_row]]
+        field_index, matched_specs = _map_header(header, column_map, duplicates, paired)
+        missing = [col for col in required if col not in matched_specs]
+        if not missing:
+            return field_index, rows[header_row + 1 :], header
+        if best_missing is None or len(missing) < len(best_missing):
+            best_missing = missing
+
+    raise ImportError_(f"工作表「{sheet.title}」缺少必要欄位：{'、'.join(best_missing or required)}")
 
 
 def _row_to_dict(row: tuple, field_index: dict[str, int]) -> dict:
@@ -221,9 +266,23 @@ def _carry_over(session: Session, model, from_batch: int, to_batch: int) -> int:
     return session.scalar(select(func.count()).select_from(table).where(table.c.batch_id == to_batch)) or 0
 
 
+def _carry_over_where(session: Session, model, from_batch: int, to_batch: int, condition) -> int:
+    """同 _carry_over，但只複製符合條件的列，回傳複製筆數。"""
+    table = model.__table__
+    columns = [c for c in table.columns if c.name not in ("id", "batch_id")]
+    source = select(literal(to_batch).label("batch_id"), *columns).where(table.c.batch_id == from_batch, condition)
+    result = session.execute(insert(table).from_select(["batch_id", *(c.name for c in columns)], source))
+    return result.rowcount or 0
+
+
 # --------------------------------------------------------------------------- 維修紀錄合併
 
-REPAIR_FIELDS = tuple(dict.fromkeys(M.REPAIR_COLUMNS.values()))
+# 兩版欄位的聯集；底線開頭者（新版的分數欄）只供比對，不入庫
+REPAIR_FIELDS = tuple(
+    f
+    for f in dict.fromkeys([*M.REPAIR_COLUMNS.values(), *M.REPAIR_COLUMNS_V2.values()])
+    if not f.startswith("_")
+)
 
 
 def _comparable(value: Any) -> Any:
@@ -236,7 +295,7 @@ def _comparable(value: Any) -> Any:
 
 
 def _repair_values(source) -> dict:
-    get = source.get if isinstance(source, dict) else lambda f: getattr(source, f)
+    get = source.get if isinstance(source, dict) else lambda f: getattr(source, f, None)
     return {f: _comparable(get(f)) for f in REPAIR_FIELDS}
 
 
@@ -323,6 +382,95 @@ def import_workbook(
     return batch, report
 
 
+def _clean_ref(value: Any) -> str | None:
+    """NA / N/A 視為未填（ECN 的影響站別、設備ID 常填 NA 表示全廠）。"""
+    text = _to_text(value)
+    if text is None or text.upper() in ("NA", "N/A", "-"):
+        return None
+    return text
+
+
+def parse_equipment_reference(sheet) -> list[dict]:
+    """解析「設備對應參考」。
+
+    工作表左右並排兩塊表（CTP：MES站別/站別/屬性/設備名稱/設備ID；
+    OP：站別/屬性/設備名稱/設備代碼），表頭列也不一樣，因此不能用 _read_table：
+    逐列找「設備名稱」表頭，往右取最近的設備代碼欄、往左取站別、屬性欄，
+    之後的列即為該塊的資料。
+    """
+    rows = list(sheet.iter_rows(values_only=True))
+    blocks: list[dict] = []  # {start_row, name_col, code_col, station_col, attr_col}
+    for r, row in enumerate(rows[:_HEADER_SCAN_ROWS]):
+        header = [M.normalize(cell) for cell in row]
+        for c, name in enumerate(header):
+            if name != M.EQUIPMENT_REF_NAME:
+                continue
+            if any(b["name_col"] == c for b in blocks):
+                continue
+            code_col = next(
+                (i for i in range(c + 1, len(header)) if header[i] in M.EQUIPMENT_REF_CODES), None
+            )
+            if code_col is None:
+                continue
+            left = header[:c]
+            station_col = max((i for i, h in enumerate(left) if h == "站別"), default=None)
+            attr_col = max((i for i, h in enumerate(left) if h == "屬性"), default=None)
+            blocks.append(
+                {"start": r + 1, "name_col": c, "code_col": code_col, "station_col": station_col, "attr_col": attr_col}
+            )
+
+    def cell(row, idx):
+        return _to_text(row[idx]) if idx is not None and idx < len(row) else None
+
+    out: list[dict] = []
+    for block in blocks:
+        for row in rows[block["start"] :]:
+            name = cell(row, block["name_col"])
+            code = cell(row, block["code_col"])
+            if not name or not code or name == M.EQUIPMENT_REF_NAME:
+                continue
+            station_group = cell(row, block["station_col"])
+            out.append(
+                {
+                    "name": name,
+                    "code": code,
+                    "station_group": station_group,
+                    "attribute": cell(row, block["attr_col"]),
+                }
+            )
+    return out
+
+
+_REF_KEY_PREFIX = "REF:"
+_INTERVAL = re.compile(r"(\d+(?:\.\d+)?)\s*(h|hr|小時)", re.IGNORECASE)
+
+
+def parse_interval_hours(frequency: str | None) -> float:
+    """點檢頻率字串 -> 間隔小時，例：「開線/班、巡檢: 2h/次」-> 2。解析不到預設 2 小時。"""
+    if frequency:
+        match = _INTERVAL.search(frequency)
+        if match:
+            return float(match.group(1))
+    return 2.0
+
+
+class _StationLookup:
+    """站別名稱 -> 設備代碼。修護報表、高風險點檢的 OP 列沒有設備ID，靠此補上。"""
+
+    def __init__(self, by_name: dict[str, str]):
+        self.by_name = by_name
+
+    def resolve(self, station: str | None, *, op: bool) -> str | None:
+        if not station:
+            return None
+        name = station.strip()
+        if name in self.by_name:
+            return self.by_name[name]
+        if op and name in M.STATION_ALIASES_OP:
+            return self.by_name.get(M.STATION_ALIASES_OP[name])
+        return None
+
+
 def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportReport) -> None:
     previous = _active_batch_id(session)
 
@@ -344,12 +492,12 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     method_scores = dict(dictionary)
     report.row_counts["detectionMethods"] = len(dictionary)
 
-    # 2) 設備維度
+    # 2) 設備維度：Dim_Equipment（舊版）＋ 設備對應參考（新版，含 OP 人工站）
     equipment_sheet = _provided_sheet(workbook, "equipment")
+    ref_sheet = _provided_sheet(workbook, "equipment_ref")
+    equipment_codes: set[str] = set()
     if equipment_sheet is not None:
         idx, rows, _ = _read_table(equipment_sheet, M.EQUIPMENT_COLUMNS, M.EQUIPMENT_REQUIRED, "equipment")
-        equipment_codes: set[str] = set()
-        equipment_count = 0
         for row in rows:
             data = _row_to_dict(row, idx)
             code = data.get("equipment_code")
@@ -357,15 +505,57 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 continue
             equipment_codes.add(code)
             session.add(DimEquipment(batch_id=batch.id, **data))
-            equipment_count += 1
-        report.row_counts["equipment"] = equipment_count
     elif previous is not None:
         carry(DimEquipment, "Dim_Equipment", "equipment")
         equipment_codes = set(
             session.scalars(select(DimEquipment.equipment_code).where(DimEquipment.batch_id == batch.id))
         )
+    elif ref_sheet is None:
+        raise ImportError_("首次匯入必須包含「Dim_Equipment」或「設備對應參考」工作表")
+
+    station_to_code: dict[str, str] = {}
+    if ref_sheet is not None:
+        reference = parse_equipment_reference(ref_sheet)
+        if not reference:
+            report.warnings.append(f"「{ref_sheet.title}」中找不到設備名稱／設備代碼對照")
+        # OP 優先：站別查找主要用於 OP 列
+        reference.sort(key=lambda e: 0 if e["attribute"] == "OP" else 1)
+        for entry in reference:
+            override = M.EQUIPMENT_OVERRIDES.get(entry["station_group"] or "")
+            if override and override != entry["code"]:
+                report.warnings.append(
+                    f"「{ref_sheet.title}」{entry['station_group']} 的設備代碼為 {entry['code']}，"
+                    f"依現場確認改為 {override}"
+                )
+                entry["code"] = override
+            station_to_code.setdefault(entry["name"], entry["code"])
+            if entry["code"] not in equipment_codes:
+                equipment_codes.add(entry["code"])
+                session.add(
+                    DimEquipment(
+                        batch_id=batch.id,
+                        equipment_code=entry["code"],
+                        # 標記來源，之後的批次沒附「設備對應參考」時仍能重建站別對照
+                        equipment_key=f"{_REF_KEY_PREFIX}{entry['station_group'] or ''}",
+                        model_desc=entry["name"],
+                        equipment_desc=entry["name"],
+                    )
+                )
     else:
-        raise ImportError_("首次匯入必須包含「Dim_Equipment」工作表")
+        session.flush()
+        for code, desc in session.execute(
+            select(DimEquipment.equipment_code, DimEquipment.equipment_desc).where(
+                DimEquipment.batch_id == batch.id,
+                DimEquipment.equipment_key.like(f"{_REF_KEY_PREFIX}%"),
+            )
+        ):
+            if desc:
+                station_to_code.setdefault(desc, code)
+    lookup = _StationLookup(station_to_code)
+    session.flush()
+    report.row_counts["equipment"] = session.scalar(
+        select(func.count()).select_from(DimEquipment).where(DimEquipment.batch_id == batch.id)
+    ) or 0
 
     # 3) 錯誤碼字典
     error_sheet = _provided_sheet(workbook, "error_code")
@@ -396,17 +586,45 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     # 4) KPOV 基準
     kpov_sheet = _provided_sheet(workbook, "kpov")
     if kpov_sheet is not None:
-        idx, rows, _ = _read_table(kpov_sheet, M.KPOV_COLUMNS, M.KPOV_REQUIRED, "kpov")
+        idx, rows, _ = _read_table(
+            kpov_sheet,
+            M.KPOV_COLUMNS,
+            M.KPOV_REQUIRED,
+            "kpov",
+            duplicates={"station": "station_group"},
+        )
         kpov_count = 0
-        seen_kpov: set[tuple[str, str]] = set()
+        seen_kpov: set[tuple[str, str, str]] = set()
         op_count = 0
         for row_no, row in enumerate(rows, start=2):
             data = _row_to_dict(row, idx)
-            # OP 站沒有設備代碼，只要有站別就是有效列——不可用 equipment_code 當存在性判斷，
-            # 否則 23 筆 OP 會被靜默丟棄。
-            if not data.get("station"):
+            # OP 站原本沒有設備代碼，只要有站別就是有效列——不可用 equipment_code 當存在性判斷。
+            # 沒有 KPOV 名稱的是小計列（例：「ACME 導入 / 8站」），略過。
+            if not data.get("station") or not data.get("kpov_name"):
                 continue
             attribute1 = data.get("attribute1") or "UNKNOWN"
+
+            override = M.EQUIPMENT_OVERRIDES.get(data.get("station_group") or "")
+            if override and data.get("equipment_code") and data["equipment_code"] != override:
+                report.warnings.append(
+                    f"KPOV 第 {row_no} 列（{data['station_group']} · {data.get('kpov_no')}）設備ID "
+                    f"{data['equipment_code']} 依現場確認改為 {override}"
+                )
+                data["equipment_code"] = override
+            if attribute1 == "OP" and not data.get("equipment_code"):
+                code = lookup.resolve(data["station"], op=True)
+                if code:
+                    data["equipment_code"] = code
+                elif station_to_code:
+                    report.unmatched_keys.append(
+                        {
+                            "table": "fact_kpov",
+                            "row": row_no,
+                            "station": data["station"],
+                            "reason": "OP 站別在「設備對應參考」中找不到設備代碼",
+                        }
+                    )
+
             key = (attribute1, data["station"], data.get("kpov_no") or "")
             if key in seen_kpov:
                 report.warnings.append(
@@ -429,7 +647,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                             "row": row_no,
                             "kpovNo": data.get("kpov_no"),
                             "kpovName": data.get("kpov_name"),
-                            "equipmentCode": data["equipment_code"],
+                            "equipmentCode": data.get("equipment_code"),
                             "station": data.get("station"),
                             "smallY": data.get("small_y_score"),
                             "bigY": data.get("big_y_score"),
@@ -460,41 +678,58 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     else:
         raise ImportError_("首次匯入必須包含「KPOV库-by 站」工作表")
 
-    # 5) 告警明細
-    alarm_sheet = _provided_sheet(workbook, "alarm")
-    alarm_count = 0
-    if alarm_sheet is None and previous is not None:
-        carry(FactAlarm, "設備告警", "alarms")
-    elif alarm_sheet is not None:
-        idx, rows, _ = _read_table(alarm_sheet, M.ALARM_COLUMNS, M.ALARM_REQUIRED, "alarm")
-        buffer = []
-        for row in rows:
-            data = _row_to_dict(row, idx)
-            if not data.get("equipment_code"):
-                continue
-            buffer.append(FactAlarm(batch_id=batch.id, **data))
-            alarm_count += 1
-            if len(buffer) >= 2000:
-                session.bulk_save_objects(buffer)
-                buffer.clear()
-        if buffer:
-            session.bulk_save_objects(buffer)
-        report.row_counts["alarms"] = alarm_count
-    else:
-        report.row_counts["alarms"] = 0
+    session.flush()
+    kpov_keys = set(
+        session.execute(
+            select(FactKpov.kpov_no, FactKpov.equipment_code).where(FactKpov.batch_id == batch.id)
+        ).all()
+    )
 
-    # 6) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
-    idx, rows, _ = _read_table(repair_sheet, M.REPAIR_COLUMNS, M.REPAIR_REQUIRED, "repair")
+    # 5) 告警明細：鎖附 + 塗覆（新版）或單一告警表（舊版）
+    _import_alarms(session, workbook, batch, report, previous, kpov_keys, carry)
+
+    # 6) PCN / ECN 變更紀錄、高風險項點檢
+    _import_changes(session, workbook, batch, report, previous, carry)
+    _import_check_items(session, workbook, batch, report, previous, carry, lookup)
+
+    # 7) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
+    header_text = " ".join(
+        M.normalize(c) for row in repair_sheet.iter_rows(max_row=_HEADER_SCAN_ROWS, values_only=True) for c in row
+    )
+    legacy = M.REPAIR_V1_MARKER in header_text
+    repair_map = M.REPAIR_COLUMNS if legacy else M.REPAIR_COLUMNS_V2
+    idx, rows, _ = _read_table(repair_sheet, repair_map, M.REPAIR_REQUIRED, "repair")
     incoming: dict[tuple, dict] = {}
     for row_no, row in enumerate(rows, start=2):
         data = _row_to_dict(row, idx)
         if not data.get("equipment_code") and not data.get("kpov_no"):
             continue  # 字典區的列，不是維修紀錄
+        if not data.get("equipment_code") and data.get("station"):
+            # 沒有設備ID 的是 OP 站，依站別查「設備對應參考」
+            data["equipment_code"] = lookup.resolve(data["station"], op=True)
         if not data.get("equipment_code") or not data.get("kpov_no"):
             report.skipped_repair_rows.append(
-                {"row": row_no, "reason": "設備ID 或 KPOV 编号 缺值", "serialNo": data.get("serial_no")}
+                {
+                    "row": row_no,
+                    "reason": "設備ID 或 KPOV 编号 缺值（站別也無法對應設備）",
+                    "serialNo": data.get("serial_no"),
+                    "station": data.get("station"),
+                }
             )
             continue
+        if not legacy:
+            for method_field, score_field in (
+                ("small_y_method_after", "_small_y_score_after"),
+                ("big_y_method_after", "_big_y_score_after"),
+                ("small_y_method_improved", "_small_y_score_improved"),
+                ("big_y_method_improved", "_big_y_score_improved"),
+            ):
+                method = data.get(method_field)
+                given = _to_int(data.get(score_field))
+                if method in method_scores and given is not None and given != method_scores[method]:
+                    report.warnings.append(
+                        f"修護報表第 {row_no} 列「{method}」填 {given} 分，字典為 {method_scores[method]} 分，以字典為準"
+                    )
         values = _repair_values(data)
         key = _repair_key(values)
         if key in incoming:
@@ -534,6 +769,129 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     report.row_counts["repairsUnchanged"] = unchanged_count
     report.row_counts["repairsCarried"] = len(merged) - len(incoming)
 
-    # 7) 等級異動事件
+    # 8) 等級異動事件
     derive_level_events(session, batch, repairs, method_scores, report)
     report.row_counts["levelEvents"] = len(report.level_events)
+
+
+def _period_from(value: str | None) -> str | None:
+    """告警日期 20251016 / 202608 -> 期別 YYYYMM。"""
+    if not value:
+        return None
+    digits = re.sub(r"\D", "", value)
+    return digits[:6] if len(digits) >= 6 else value
+
+
+def _import_alarms(session, workbook, batch, report, previous, kpov_keys, carry) -> None:
+    sources = [
+        ("alarm_screw", "鎖附", M.ALARM_COLUMNS, M.ALARM_REQUIRED, "alarmsScrew"),
+        ("alarm_coat", "塗覆", M.ALARM_COATING_COLUMNS, M.ALARM_COATING_REQUIRED, "alarmsCoating"),
+        ("alarm", "legacy", M.ALARM_COLUMNS, M.ALARM_REQUIRED, "alarmsLegacy"),
+    ]
+    provided = [(s, _provided_sheet(workbook, s[0])) for s in sources]
+    provided = [(s, sheet) for s, sheet in provided if sheet is not None]
+    if not provided:
+        if previous is not None:
+            carry(FactAlarm, "設備告警", "alarms")
+        else:
+            report.row_counts["alarms"] = 0
+        return
+
+    total = 0
+    unmatched: dict[tuple[str, str], int] = {}
+    for (role, source, columns, required, count_key), sheet in provided:
+        idx, rows, _ = _read_table(sheet, columns, required, role)
+        buffer = []
+        count = 0
+        for row in rows:
+            data = _row_to_dict(row, idx)
+            if not data.get("equipment_code"):
+                continue
+            data["period"] = _period_from(data.get("period")) or (
+                data["stop_start_at"].strftime("%Y%m") if data.get("stop_start_at") else None
+            )
+            kpov_no = data.get("kpov_no")
+            if kpov_no and (kpov_no, data["equipment_code"]) not in kpov_keys:
+                pair = (kpov_no, data["equipment_code"])
+                unmatched[pair] = unmatched.get(pair, 0) + 1
+            buffer.append(FactAlarm(batch_id=batch.id, source=source, **data))
+            count += 1
+            if len(buffer) >= 2000:
+                session.bulk_save_objects(buffer)
+                buffer.clear()
+        if buffer:
+            session.bulk_save_objects(buffer)
+        report.row_counts[count_key] = count
+        total += count
+    report.row_counts["alarms"] = total
+    for (kpov_no, code), n in sorted(unmatched.items()):
+        report.unmatched_keys.append(
+            {
+                "table": "fact_alarm",
+                "kpovNo": kpov_no,
+                "equipmentCode": code,
+                "count": n,
+                "reason": "告警的 KPOV × 設備 組合在 KPOV 庫中不存在",
+            }
+        )
+
+
+def _import_changes(session, workbook, batch, report, previous, carry) -> None:
+    for role, kind in (("pcn", "PCN"), ("ecn", "ECN")):
+        sheet = _provided_sheet(workbook, role)
+        key = f"{kind.lower()}Records"
+        if sheet is None:
+            if previous is not None:
+                count = _carry_over_where(session, FactChangeRecord, previous, batch.id, FactChangeRecord.kind == kind)
+                report.row_counts[key] = count
+                if count:
+                    report.warnings.append(f"未提供「{kind} 紀錄」，沿用批次 #{previous} 的 {count} 筆資料")
+            else:
+                report.row_counts[key] = 0
+            continue
+        idx, rows, _ = _read_table(sheet, M.CHANGE_COLUMNS, M.CHANGE_REQUIRED, role, paired=M.CHANGE_PAIRED)
+        count = 0
+        for row in rows:
+            data = _row_to_dict(row, idx)
+            if not data.get("effective_at") and not data.get("content"):
+                continue
+            for field in ("station", "equipment_code", "kpov_name", "kpov_no"):
+                data[field] = _clean_ref(data.get(field))
+            if kind == "PCN" and not data.get("kpov_no"):
+                continue
+            session.add(FactChangeRecord(batch_id=batch.id, kind=kind, **data))
+            count += 1
+        report.row_counts[key] = count
+
+
+def _import_check_items(session, workbook, batch, report, previous, carry, lookup: _StationLookup) -> None:
+    sheet = _provided_sheet(workbook, "check_item")
+    if sheet is None:
+        if previous is not None:
+            carry(FactCheckItem, "高風險項點檢", "checkItems")
+        else:
+            report.row_counts["checkItems"] = 0
+        return
+    idx, rows, _ = _read_table(sheet, M.CHECK_ITEM_COLUMNS, M.CHECK_ITEM_REQUIRED, "check_item")
+    count = 0
+    for row_no, row in enumerate(rows, start=3):
+        data = _row_to_dict(row, idx)
+        if not data.get("check_content") or not data.get("kpov_no"):
+            continue
+        if not data.get("equipment_code"):
+            data["equipment_code"] = lookup.resolve(data.get("station"), op=data.get("attribute1") == "OP")
+            if not data["equipment_code"]:
+                report.unmatched_keys.append(
+                    {
+                        "table": "fact_check_item",
+                        "row": row_no,
+                        "station": data.get("station"),
+                        "kpovNo": data.get("kpov_no"),
+                        "reason": "點檢項目的站別在「設備對應參考」中找不到設備代碼",
+                    }
+                )
+        session.add(
+            FactCheckItem(batch_id=batch.id, interval_hours=parse_interval_hours(data.get("frequency")), **data)
+        )
+        count += 1
+    report.row_counts["checkItems"] = count

@@ -216,6 +216,11 @@ export default function ArDashboardPage() {
                     <td className="py-2 pr-2">
                       <span className="text-slate-800">{r.deviceName}</span>
                       <span className="ml-1.5 font-mono text-xs text-slate-400">#{r.markerId}</span>
+                      {r.checkContent && (
+                        <span className="block text-xs text-slate-500">
+                          {r.kpovNo} · {r.checkContent}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 pr-2">
                       <StatusBadge status={r.status} />

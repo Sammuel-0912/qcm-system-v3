@@ -19,13 +19,21 @@ def normalize(value) -> str:
 
 # 工作表角色 -> 名稱比對前綴（皆以 normalize 後比對）
 SHEET_PREFIXES: dict[str, tuple[str, ...]] = {
-    "kpov": ("KPOV库-by 站", "KPOV庫-by 站", "KPOV库", "KPOV庫"),
+    # 新版（1008）工作表名稱為「KPOV-by 站 」，沒有「库/庫」
+    "kpov": ("KPOV库-by 站", "KPOV庫-by 站", "KPOV-by 站", "KPOV库", "KPOV庫"),
     "repair": ("修護報表", "修护报表"),
     "equipment": ("Dim_Equipment",),
-    "alarm": ("7_8月設備告警", "設備告警(與品質相關)", "設備告警"),
+    # 新版以「設備對應參考」取代 Dim_Equipment（含 OP 人工站 A0001–A0008）
+    "equipment_ref": ("設備對應參考",),
+    "alarm": ("7_8月設備告警", "設備告警(與品質相關)"),
+    "alarm_screw": ("鎖附設備告警",),
+    "alarm_coat": ("塗覆設備告警",),
     "error_code": ("設備告警品質相關代碼庫",),
     # 與 error_code 內容重複，刻意忽略（REQ-IMP-04）
     "error_code_dup": ("與品質相關設M-error庫",),
+    "pcn": ("PCN 紀錄", "PCN紀錄"),
+    "ecn": ("ECN 紀錄", "ECN紀錄"),
+    "check_item": ("高風險項點檢",),
 }
 
 KPOV_COLUMNS: dict[str, str] = {
@@ -37,6 +45,8 @@ KPOV_COLUMNS: dict[str, str] = {
     "屬性1": "attribute1",
     "製程單元_繁體": "process_unit_zh",
     "製程單元_英文": "process_unit_en",
+    # 新版有兩個「站別」：第一個是站位（輔線/自動1/人工1），最後一個才是原站別，
+    # 由 excel._read_table 的 duplicates 參數分配
     "站別": "station",
     "分类": "category",
     "KPOV": "kpov_name",
@@ -97,10 +107,26 @@ ALARM_COLUMNS: dict[str, str] = {
     "故障現象": "breakdown_desc",
     "報警次分類": "alarm_subcategory",
     "報警內容": "alarm_content",
+    "KPOV": "kpov_name",
+    "KPOV 编号": "kpov_no",
 }
 ALARM_REQUIRED = ("設備代碼",)
 
-REPAIR_COLUMNS: dict[str, str] = {
+# 「塗覆設備告警」是維修單格式，對應到同一張告警表
+ALARM_COATING_COLUMNS: dict[str, str] = {
+    "序號": "serial_no",
+    "線別": "line",
+    "測試時間": "stop_start_at",
+    "不良描述": "alarm_content",
+    "產品不良描述": "breakdown_desc",
+    "制程單元": "process_unit",
+    "設備ID": "equipment_code",
+    "KPOV": "kpov_name",
+    "KPOV 编号": "kpov_no",
+}
+ALARM_COATING_REQUIRED = ("設備ID", "KPOV 编号")
+
+_REPAIR_COMMON: dict[str, str] = {
     "月份": "month",
     "序號": "serial_no",
     "機種": "product_model",
@@ -119,22 +145,89 @@ REPAIR_COLUMNS: dict[str, str] = {
     "處理對策": "countermeasure",
     "責任部門": "responsible_dept",
     "維修備註": "remark",
+    "站別": "station",
     "設備ID": "equipment_code",
     "KPOV 编号": "kpov_no",
-    "小y偵測方式(變化後)": "small_y_method_after",
-    "大y偵測方式(變化後)": "big_y_method_after",
     "改善措施": "improvement",
-    "小y偵測方式(提升後)": "small_y_method_improved",
-    "大y偵測方式(提升後)": "big_y_method_improved",
     # D-03：來源 Excel 若新增此欄則自動採用為 IMPROVE 生效時間
     "改善生效日": "improvement_effective_at",
 }
-REPAIR_REQUIRED = ("設備ID", "KPOV 编号")
+
+# 舊版：「(變化後)」= 不良發生時（DEGRADE）、「(提升後)」= 改善後（IMPROVE）
+REPAIR_COLUMNS: dict[str, str] = {
+    **_REPAIR_COMMON,
+    "小y偵測方式(變化後)": "small_y_method_after",
+    "大y偵測方式(變化後)": "big_y_method_after",
+    "小y偵測方式(提升後)": "small_y_method_improved",
+    "大y偵測方式(提升後)": "big_y_method_improved",
+}
+
+# 新版（1008）：無後綴 = 不良發生時（DEGRADE）、「(變化後)」= 改善後（IMPROVE）。
+# 同名的「(變化後)」在兩版意義相反，因此以是否存在「(提升後)」欄判別版本。
+# 分數欄只用來與偵測方式字典比對，不入庫。
+REPAIR_COLUMNS_V2: dict[str, str] = {
+    **_REPAIR_COMMON,
+    "小y偵測方式": "small_y_method_after",
+    "大y偵測方式": "big_y_method_after",
+    "小y偵測方式(變化後)": "small_y_method_improved",
+    "大y偵測方式(變化後)": "big_y_method_improved",
+    "小y分數": "_small_y_score_after",
+    "大y分數": "_big_y_score_after",
+    "小y分數(變化後)": "_small_y_score_improved",
+    "大y分數(變化後)": "_big_y_score_improved",
+}
+REPAIR_V1_MARKER = "(提升後)"
+REPAIR_REQUIRED = ("KPOV 编号",)
+
+# 「設備對應參考」：左區 CTP（MES站別/站別/屬性/設備名稱/設備ID）、右區 OP（站別/屬性/設備名稱/設備代碼）
+EQUIPMENT_REF_NAME = "設備名稱"
+EQUIPMENT_REF_CODES = ("設備ID", "設備代碼")
+
+# 站位 -> 設備代碼的強制修正。來源資料把「自動3」誤植為 OT00420104（自動4 的設備），
+# 現場確認自動3 是 OT00420118。
+EQUIPMENT_OVERRIDES: dict[str, str] = {"自動3": "OT00420118"}
+
+# 只用於 OP（人工站）的站別別名：高風險項點檢等表沿用舊站名，對不到「設備對應參考」
+STATION_ALIASES_OP: dict[str, str] = {
+    "固定絕緣片": "固定絕緣片/PWB板",
+    "鎖軟銅排2": "固定保險絲/軟銅排",
+}
+
+# PCN / ECN：「切入前」「切入後」兩組同名欄位，依出現順序分配 before / after
+CHANGE_COLUMNS: dict[str, str] = {
+    "切入時間": "effective_at",
+    "ECN號碼": "ecn_no",
+    "內容": "content",
+    "影響站別": "station",
+    "設備ID": "equipment_code",
+    "KPOV": "kpov_name",
+    "KPOV 编号": "kpov_no",
+    "小y偵測方式": "small_y",
+    "大y偵測方式": "big_y",
+    "品控力等級": "level",
+}
+CHANGE_PAIRED = ("small_y", "big_y", "level")
+CHANGE_REQUIRED = ("切入時間", "內容")
+
+CHECK_ITEM_COLUMNS: dict[str, str] = {
+    "屬性1": "attribute1",
+    "站別": "station",
+    "KPOV": "kpov_name",
+    "KPOV 编号": "kpov_no",
+    "設備ID": "equipment_code",
+    "小y偵測度": "small_y_score",
+    "大Y偵測度": "big_y_score",
+    "品控力等級": "level_source",
+    "點檢內容": "check_content",
+    "點檢頻率": "frequency",
+}
+CHECK_ITEM_REQUIRED = ("KPOV 编号", "點檢內容")
 
 # 數值欄位（需轉 int / float）
 INT_FIELDS = {"small_y_score", "big_y_score"}
 FLOAT_FIELDS = {"tbs_min", "downtime_min", "stop_duration_min"}
 DATETIME_FIELDS = {
+    "effective_at",
     "prev_start_at",
     "stop_start_at",
     "stop_end_at",
