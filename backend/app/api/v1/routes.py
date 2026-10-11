@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,7 @@ from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
 from ...models import DimEquipment, FactChangeRecord, FactLevelEvent, FactRepair, ImportBatch
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
+from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
@@ -412,3 +414,19 @@ def import_history(session: Session = Depends(get_session)):
         {**_batch_info(b), "status": b.status, "isActive": b.is_active, "rowCounts": b.row_counts}
         for b in batches
     ]
+
+
+class PresenceIn(BaseModel):
+    sid: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/presence/heartbeat")
+def presence_heartbeat(body: PresenceIn):
+    presence.touch(body.sid)
+    return {"online": presence.count()}
+
+
+@router.post("/presence/leave", status_code=204)
+def presence_leave(body: PresenceIn):
+    # 由 navigator.sendBeacon 在關閉分頁時呼叫，回應不會被讀取
+    presence.leave(body.sid)
