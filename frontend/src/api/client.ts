@@ -236,4 +236,18 @@ export const api = {
     if (!res.ok) throw new ApiError(body.detail ?? '匯入失敗')
     return body
   },
+  async heartbeat(sid: string): Promise<{ online: number }> {
+    const res = await fetch(`${BASE}/presence/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid }),
+    })
+    if (!res.ok) throw new ApiError('心跳失敗')
+    return res.json()
+  },
+  /** 關閉分頁時用；sendBeacon 在 pagehide 期間仍會送出，fetch 則可能被瀏覽器取消 */
+  leave(sid: string) {
+    const body = new Blob([JSON.stringify({ sid })], { type: 'application/json' })
+    navigator.sendBeacon(`${BASE}/presence/leave`, body)
+  },
 }

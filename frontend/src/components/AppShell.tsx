@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
+import { usePresence } from '../hooks/usePresence'
+
 type NavItem = { to: string; label: string; hint?: string }
 type NavGroup = { title: string; items: NavItem[] }
 
@@ -119,13 +121,22 @@ type Props = {
  * 蓋滿整個視窗，頁首會被遮住或反過來擋住相機畫面（見 ar-integration-spec.md §2）。
  */
 export function AppShell({ title, actions, children }: Props) {
+  const online = usePresence()
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-4">
           <h1 className="text-xl font-semibold">{title}</h1>
           <NavMenu />
-          {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
+          <div className="ml-auto flex items-center gap-4">
+            {online !== null && (
+              <span className="flex items-center gap-1.5 text-sm text-slate-500" title="目前開著本網站的分頁數">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                線上 {online} 人
+              </span>
+            )}
+            {actions && <div className="flex items-center gap-2">{actions}</div>}
+          </div>
         </div>
       </header>
       {children}

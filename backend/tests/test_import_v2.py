@@ -253,3 +253,18 @@ def test_shift_slots_progress(imported):
     assert row["completed"] == 2
     assert row["progress"] == 40
     session.rollback()
+
+
+def test_op_pcn_equipment_resolved_by_station(imported):
+    """OP 站的 PCN 沒填設備ID，依影響站別查「設備對應參考」補上。"""
+    session, batch, _ = imported
+    op = session.scalars(
+        select(FactChangeRecord).where(
+            FactChangeRecord.batch_id == batch.id,
+            FactChangeRecord.kind == "PCN",
+            FactChangeRecord.station == "鎖後蓋",
+        )
+    ).all()
+    assert op and {r.equipment_code for r in op} == {"A0003"}
+    kpovs = {(k.kpov_no, k.equipment_code) for k in _kpovs(session, batch, attribute1="OP")}
+    assert sum((r.kpov_no, r.equipment_code) in kpovs for r in op) == len(op)

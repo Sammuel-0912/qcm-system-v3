@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { arApi, type ArDevice, type DeviceQuality } from '../api/arClient'
 import type { CheckMonitorRow, CheckStatus } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
+import { usePresence } from '../hooks/usePresence'
 
 // 以 ?url 取得套件預建檔的位址：Vite 會原樣複製到 dist/assets 並加 hash，不經 bundler 解析。
 // AR.js 的預建檔是依賴全域 AFRAME 的 IIFE，無法當成 ESM import，故以 classic <script> 注入。
@@ -72,6 +73,8 @@ function teardownScene() {
 type Phase = 'loading' | 'start' | 'ar'
 
 export default function ArInspectPage() {
+  // 此頁不用 AppShell，另外回報心跳，掃描中的人才會被算進線上人數（不顯示）
+  usePresence()
   const [searchParams] = useSearchParams()
   const urlMarkerId = searchParams.get('marker_id')
   const qrMode = urlMarkerId !== null

@@ -260,6 +260,10 @@ def test_history_includes_pcn_and_plant_wide_ecn(client):
     pcn = next(c for c in body["changes"] if c["kind"] == "PCN")
     assert (pcn["levelBefore"], pcn["levelAfter"]) == ("Level 3", "Level 1")
 
-    # OP 站也看得到全廠 ECN
+    # OP 站：K00048 插線/理線沒有 PCN，只看得到全廠 ECN
     op = client.get("/api/v1/kpov/K00048/A0001/history").json()
     assert [c["kind"] for c in op["changes"]] == ["ECN"]
+
+    # OP 站的 PCN（Excel 未填設備ID）也要出現：鎖後蓋 = A0003
+    pcn_op = client.get("/api/v1/kpov/K00001/A0003/history").json()
+    assert sorted(c["kind"] for c in pcn_op["changes"]) == ["ECN", "PCN"]
