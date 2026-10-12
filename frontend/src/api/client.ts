@@ -96,10 +96,14 @@ export type EventItem = {
   defectDesc: string | null
   improvement: string | null
   repairSerial: string | null
+  /** 改善時間在未來：預計改善，尚未生效 */
+  planned?: boolean
 }
 
 export type EventsResponse = {
   summary: { escalatedOpen: number; improved: number; totalEvents: number }
+  /** 各「變化後 Level」的筆數（不受 levelAfter 篩選影響） */
+  levelCounts?: Record<string, number>
   items: EventItem[]
 }
 
@@ -134,7 +138,13 @@ export type CheckStatus = 'ok' | 'warn' | 'overdue' | 'never'
 
 export type SlotState = 'ok' | 'warn' | 'missed' | 'current' | 'upcoming'
 
-export type CheckSlot = { start: string; end: string; state: SlotState; inspectedAt: string | null }
+export type CheckSlot = {
+  start: string
+  end: string
+  state: SlotState
+  inspectedAt: string | null
+  photoUrl: string | null
+}
 
 export type CheckShift = { name: string; label: string; start: string; end: string; ended: boolean }
 
@@ -152,6 +162,8 @@ export type CheckMonitorRow = {
   status: CheckStatus
   lastResult: 'ok' | 'warn' | null
   lastInspectedAt: string | null
+  lastPhotoUrl: string | null
+  lastNote: string | null
   nextDueAt: string | null
   overdue: boolean
   /** 本班各時段（2 小時一格），每格完成 = 一格進度 */
@@ -227,7 +239,28 @@ export const api = {
     get<{ total: number; items: KpovItem[] }>('/kpov', p),
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
-  events: (p: Scope) => get<EventsResponse>('/events', p),
+  events: (p: Scope & { levelAfter?: string }) => get<EventsResponse>('/events', p),
+  checkItems: (station?: string) =>
+    get<{ stations: string[]; items: CheckMonitorRow[]; shift: CheckShift }>('/check-items', { station }),
+  /** 拍照點檢：照片上傳成功即記一次點檢 */
+  async checkInspect(p: {
+    item: Pick<CheckMonitorRow, 'equipmentCode' | 'kpovNo' | 'checkContent'>
+    file: File
+    status: 'ok' | 'warn'
+    note?: string
+  }) {
+    const form = new FormData()
+    form.append('equipmentCode', p.item.equipmentCode ?? '')
+    if (p.item.kpovNo) form.append('kpovNo', p.item.kpovNo)
+    form.append('checkContent', p.item.checkContent)
+    form.append('status', p.status)
+    if (p.note) form.append('note', p.note)
+    form.append('file', p.file)
+    const res = await fetch(`${BASE}/check-inspections`, { method: 'POST', body: form })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '上傳失敗')
+    return body as { id: number; status: string; photoUrl: string; inspectedAt: string }
+  },
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

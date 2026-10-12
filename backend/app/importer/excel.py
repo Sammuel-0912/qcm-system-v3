@@ -513,22 +513,31 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     elif ref_sheet is None:
         raise ImportError_("首次匯入必須包含「Dim_Equipment」或「設備對應參考」工作表")
 
-    station_to_code: dict[str, str] = {}
+    # 站別名稱 -> 設備代碼，依序以後者覆蓋前者：
+    #   內建 OP 預設對照 -> 前批由「設備對應參考」補入的設備 -> 本次檔案
+    # 1011 版的「設備對應參考」少了 OP 區，靠預設／前批對照仍能補上 A000N。
+    station_to_code: dict[str, str] = {name: code for _, name, code in M.DEFAULT_OP_EQUIPMENT}
+    session.flush()
+    for code, desc in session.execute(
+        select(DimEquipment.equipment_code, DimEquipment.equipment_desc).where(
+            DimEquipment.batch_id == batch.id,
+            DimEquipment.equipment_key.like(f"{_REF_KEY_PREFIX}%"),
+        )
+    ):
+        if desc:
+            station_to_code[desc] = code
     if ref_sheet is not None:
         reference = parse_equipment_reference(ref_sheet)
         if not reference:
             report.warnings.append(f"「{ref_sheet.title}」中找不到設備名稱／設備代碼對照")
         # OP 優先：站別查找主要用於 OP 列
         reference.sort(key=lambda e: 0 if e["attribute"] == "OP" else 1)
+        file_names: set[str] = set()
         for entry in reference:
-            override = M.EQUIPMENT_OVERRIDES.get(entry["station_group"] or "")
-            if override and override != entry["code"]:
-                report.warnings.append(
-                    f"「{ref_sheet.title}」{entry['station_group']} 的設備代碼為 {entry['code']}，"
-                    f"依現場確認改為 {override}"
-                )
-                entry["code"] = override
-            station_to_code.setdefault(entry["name"], entry["code"])
+            if entry["name"] not in file_names:
+                # 同名以檔案中第一筆（OP 優先）為準，並覆蓋前批對照
+                file_names.add(entry["name"])
+                station_to_code[entry["name"]] = entry["code"]
             if entry["code"] not in equipment_codes:
                 equipment_codes.add(entry["code"])
                 session.add(
@@ -541,21 +550,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                         equipment_desc=entry["name"],
                     )
                 )
-    else:
-        session.flush()
-        for code, desc in session.execute(
-            select(DimEquipment.equipment_code, DimEquipment.equipment_desc).where(
-                DimEquipment.batch_id == batch.id,
-                DimEquipment.equipment_key.like(f"{_REF_KEY_PREFIX}%"),
-            )
-        ):
-            if desc:
-                station_to_code.setdefault(desc, code)
     lookup = _StationLookup(station_to_code)
-    session.flush()
-    report.row_counts["equipment"] = session.scalar(
-        select(func.count()).select_from(DimEquipment).where(DimEquipment.batch_id == batch.id)
-    ) or 0
 
     # 3) 錯誤碼字典
     error_sheet = _provided_sheet(workbook, "error_code")
@@ -604,10 +599,10 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 continue
             attribute1 = data.get("attribute1") or "UNKNOWN"
 
-            override = M.EQUIPMENT_OVERRIDES.get(data.get("station_group") or "")
+            override = M.EQUIPMENT_OVERRIDES.get(data["station"]) if attribute1 == "CTP" else None
             if override and data.get("equipment_code") and data["equipment_code"] != override:
                 report.warnings.append(
-                    f"KPOV 第 {row_no} 列（{data['station_group']} · {data.get('kpov_no')}）設備ID "
+                    f"KPOV 第 {row_no} 列（{data['station']} · {data.get('kpov_no')}）設備ID "
                     f"{data['equipment_code']} 依現場確認改為 {override}"
                 )
                 data["equipment_code"] = override
@@ -657,8 +652,16 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                     )
             equipment_code = data.get("equipment_code")
             if equipment_code and equipment_code not in equipment_codes:
-                report.unmatched_keys.append(
-                    {"table": "fact_kpov", "row": row_no, "equipmentCode": equipment_code}
+                # 新版不再提供 Dim_Equipment，「設備對應參考」也不一定列全（例：OT00420118）。
+                # KPOV 庫用到的設備補進設備維度，AR 設備綁定與線別篩選才找得到。
+                equipment_codes.add(equipment_code)
+                session.add(
+                    DimEquipment(
+                        batch_id=batch.id,
+                        equipment_code=equipment_code,
+                        equipment_desc=data["station"],
+                        model_desc=data["station"],
+                    )
                 )
 
             session.add(FactKpov(batch_id=batch.id, level_baseline=level, level_mismatch=mismatch, **data))
@@ -679,6 +682,10 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
         raise ImportError_("首次匯入必須包含「KPOV库-by 站」工作表")
 
     session.flush()
+    # 設備筆數在 KPOV 之後才算：KPOV 用到但維度沒有的設備會在上一步補入
+    report.row_counts["equipment"] = session.scalar(
+        select(func.count()).select_from(DimEquipment).where(DimEquipment.batch_id == batch.id)
+    ) or 0
     kpov_keys = set(
         session.execute(
             select(FactKpov.kpov_no, FactKpov.equipment_code).where(FactKpov.batch_id == batch.id)
@@ -699,6 +706,9 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     legacy = M.REPAIR_V1_MARKER in header_text
     repair_map = M.REPAIR_COLUMNS if legacy else M.REPAIR_COLUMNS_V2
     idx, rows, _ = _read_table(repair_sheet, repair_map, M.REPAIR_REQUIRED, "repair")
+    has_improve_time = "improvement_effective_at" in idx
+    if not has_improve_time:
+        report.warnings.append("修護報表沒有「改善時間」欄，改善事件暫以匯入時間代替（舊版檔案）")
     incoming: dict[tuple, dict] = {}
     for row_no, row in enumerate(rows, start=2):
         data = _row_to_dict(row, idx)
@@ -770,7 +780,9 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     report.row_counts["repairsCarried"] = len(merged) - len(incoming)
 
     # 8) 等級異動事件
-    derive_level_events(session, batch, repairs, method_scores, report)
+    derive_level_events(
+        session, batch, repairs, method_scores, report, improve_time_fallback=not has_improve_time
+    )
     report.row_counts["levelEvents"] = len(report.level_events)
 
 

@@ -60,6 +60,8 @@ export default function QualityPage() {
   const [filters, setFilters] = useState<FiltersResponse | null>(null)
   const [quadrant, setQuadrant] = useState<QuadrantResponse | null>(null)
   const [events, setEvents] = useState<EventsResponse | null>(null)
+  // 等級異動總覽的「變化後 Level」篩選：null = 尚未決定（載入後自動選最嚴重且有資料的 Level）
+  const [eventLevel, setEventLevel] = useState<string | null>(null)
   const [checks, setChecks] = useState<CheckMonitorResponse | null>(null)
   const [trend, setTrend] = useState<TrendResponse | null>(null)
   const [selectedLevel, setSelectedLevel] = useState<number | null>(null)
@@ -85,20 +87,42 @@ export default function QualityPage() {
     setLoading(true)
     setError(null)
     try {
-      const [f, q, e] = await Promise.all([
+      const [f, q] = await Promise.all([
         api.filters(),
         api.quadrant({ view: state.view, station, line, attribute }),
-        api.events({ station, line, attribute }),
       ])
       setFilters(f)
       setQuadrant(q)
-      setEvents(e)
     } catch (err) {
       setError(err instanceof Error ? err.message : '載入失敗')
     } finally {
       setLoading(false)
     }
   }, [state.view, station, line, attribute])
+
+  // 等級異動總覽：依「變化後 Level」篩選，清單才不會太長
+  const loadEvents = useCallback(async () => {
+    try {
+      const levelAfter = eventLevel && eventLevel !== 'all' ? eventLevel : undefined
+      const e = await api.events({ station, line, attribute, levelAfter })
+      if (eventLevel === null) {
+        const counts = e.levelCounts ?? {}
+        const worst = ['3', '2', '1', '0'].find((level) => (counts[level] ?? 0) > 0)
+        if (worst) {
+          setEventLevel(worst) // 觸發以該 Level 重抓
+          return
+        }
+        setEventLevel('all')
+      }
+      setEvents(e)
+    } catch {
+      setEvents(null)
+    }
+  }, [eventLevel, station, line, attribute])
+
+  useEffect(() => {
+    void loadEvents()
+  }, [loadEvents, reloadKey])
 
   // 下半部（趨勢 + 點檢監控）吃 layout 選取；未選時沿用上方篩選範圍
   const bottomScope = useMemo(
@@ -287,7 +311,12 @@ export default function QualityPage() {
               )}
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-4">
-              <DeviationPanel data={events} onSelect={openHistory} />
+              <DeviationPanel
+                data={events}
+                onSelect={openHistory}
+                level={eventLevel ?? 'all'}
+                onLevelChange={setEventLevel}
+              />
             </div>
           </section>
         )}
@@ -307,7 +336,7 @@ export default function QualityPage() {
             {trend && <TrendChart data={trend} scopeLabel={scopeLabel} />}
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <CheckMonitorTable data={checks} scopeLabel={scopeLabel} />
+            <CheckMonitorTable data={checks} scopeLabel={scopeLabel} onChanged={() => void loadChecks()} />
           </div>
         </section>
       </main>

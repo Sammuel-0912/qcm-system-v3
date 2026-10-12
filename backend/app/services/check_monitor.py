@@ -1,4 +1,8 @@
-"""Level 3 高風險項點檢監控 — 點檢項目（fact_check_item）× AR 逐項點檢紀錄（ar_inspection）。
+"""Level 3 高風險項點檢監控 — 點檢項目（fact_check_item）× 點檢紀錄。
+
+點檢紀錄有兩個來源，一律視為同一種點檢：
+  - ar_inspection：AR 掃 marker 後逐項按正常／異常
+  - check_photo_inspection：免掃碼，拍照上傳即算點檢
 
 點檢項目每次匯入都重建，AR 點檢紀錄則持續累積，兩者以
 (設備代碼, KPOV 編號, 點檢內容) 自然鍵對應，不建外鍵（理由同 ArDevice.equipment_code）。
@@ -11,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import CHECK_SHIFTS, SITE_UTC_OFFSET_HOURS
-from ..models import ArInspection, FactCheckItem
+from ..models import ArInspection, CheckPhotoInspection, FactCheckItem
 
 STATUS_OK = "ok"  # 最近一次正常，且未超過點檢間隔
 STATUS_WARN = "warn"  # 最近一次點檢結果異常
@@ -53,7 +57,10 @@ def current_shift(now: dt.datetime) -> dict:
     }
 
 
-def _slots(records: list[ArInspection], shift: dict, interval: dt.timedelta, now: dt.datetime) -> list[dict]:
+Record = ArInspection | CheckPhotoInspection
+
+
+def _slots(records: list[Record], shift: dict, interval: dt.timedelta, now: dt.datetime) -> list[dict]:
     """把班別切成數個點檢時段，每段取該段內最後一次點檢的結果。
 
     同一時段點檢多次只算一格，避免短時間內連按灌高完成度。
@@ -79,6 +86,7 @@ def _slots(records: list[ArInspection], shift: dict, interval: dt.timedelta, now
                 "end": end.isoformat(),
                 "state": state,
                 "inspectedAt": _utc(hit.inspected_at).isoformat() if hit else None,
+                "photoUrl": getattr(hit, "photo_url", None) if hit else None,
             }
         )
     return slots
@@ -117,13 +125,17 @@ def monitor_rows(
 ) -> list[dict]:
     now = _utc(now or dt.datetime.now(dt.timezone.utc))
     codes = {i.equipment_code for i in items if i.equipment_code}
-    history: dict[tuple, list[ArInspection]] = {}
+    history: dict[tuple, list[Record]] = {}
     if codes:
-        records = session.scalars(
-            select(ArInspection)
-            .where(ArInspection.equipment_code.in_(codes), ArInspection.check_content.is_not(None))
-            .order_by(ArInspection.inspected_at.desc(), ArInspection.id.desc())
-        )
+        records: list[Record] = [
+            *session.scalars(
+                select(ArInspection).where(
+                    ArInspection.equipment_code.in_(codes), ArInspection.check_content.is_not(None)
+                )
+            ),
+            *session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.equipment_code.in_(codes))),
+        ]
+        records.sort(key=lambda r: _utc(r.inspected_at), reverse=True)
         for record in records:
             history.setdefault(item_key(record.equipment_code, record.kpov_no, record.check_content), []).append(
                 record
@@ -161,6 +173,8 @@ def monitor_rows(
                 "status": status,
                 "lastResult": last.status if last else None,
                 "lastInspectedAt": last_at.isoformat() if last_at else None,
+                "lastPhotoUrl": getattr(last, "photo_url", None) if last else None,
+                "lastNote": getattr(last, "note", None) if last else None,
                 "nextDueAt": (last_at + interval).isoformat() if last_at else None,
                 "overdue": bool(last_at and now - last_at > interval),
                 "slots": slots,
