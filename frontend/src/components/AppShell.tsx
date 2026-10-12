@@ -17,6 +17,7 @@ const NAV: NavGroup[] = [
     items: [
       { to: '/ar/dashboard', label: '點檢儀表板', hint: '良率統計與報表' },
       { to: '/ar/devices', label: '設備管理', hint: 'Marker 與作業指引' },
+      { to: '/ar/photo', label: '拍照點檢', hint: '免掃碼，手機拍照上傳' },
       { to: '/ar/inspect', label: 'AR 掃描點檢', hint: '需相機權限' },
     ],
   },

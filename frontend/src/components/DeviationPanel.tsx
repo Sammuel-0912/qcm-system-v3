@@ -4,7 +4,12 @@ import { LEVEL_COLORS } from '../constants'
 type Props = {
   data: EventsResponse | null
   onSelect: (kpovNo: string, equipmentCode: string) => void
+  /** 「變化後 Level」篩選：'0'–'3' 或 'all' */
+  level: string
+  onLevelChange: (level: string) => void
 }
+
+const LEVEL_OPTIONS = ['0', '1', '2', '3'] as const
 
 function LevelChip({ level }: { level: number | null }) {
   if (level === null) return <span className="text-slate-400">—</span>
@@ -24,13 +29,15 @@ const ARROW: Record<string, { symbol: string; className: string }> = {
   UNCHANGED: { symbol: '→', className: 'text-slate-400' },
 }
 
-export function DeviationPanel({ data, onSelect }: Props) {
+export function DeviationPanel({ data, onSelect, level, onLevelChange }: Props) {
   if (!data) {
     return <div className="text-sm text-slate-500">載入中…</div>
   }
 
   const { summary, items } = data
   const escalated = summary.escalatedOpen
+  const counts = data.levelCounts ?? {}
+  const total = LEVEL_OPTIONS.reduce((sum, l) => sum + (counts[l] ?? 0), 0)
 
   return (
     <div className="flex h-full flex-col">
@@ -53,10 +60,50 @@ export function DeviationPanel({ data, onSelect }: Props) {
         </div>
       </div>
 
-      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">最近異動</div>
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">最近異動</span>
+        <span className="text-xs text-slate-400">依變化後等級</span>
+      </div>
+
+      <div className="mb-3 grid grid-cols-5 gap-1" role="tablist" aria-label="依變化後等級篩選">
+        {LEVEL_OPTIONS.map((l) => {
+          const active = level === l
+          const n = counts[l] ?? 0
+          return (
+            <button
+              key={l}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onLevelChange(l)}
+              className={`rounded-md border px-1 py-1.5 text-center text-xs transition ${
+                active ? 'border-slate-900 ring-1 ring-slate-900' : 'border-slate-200 hover:border-slate-400'
+              } ${n === 0 ? 'opacity-50' : ''}`}
+              style={{ backgroundColor: active ? LEVEL_COLORS[Number(l)] : undefined }}
+            >
+              <span className="block font-semibold text-slate-800">Level {l}</span>
+              <span className="block tabular-nums text-slate-500">{n}</span>
+            </button>
+          )
+        })}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={level === 'all'}
+          onClick={() => onLevelChange('all')}
+          className={`rounded-md border px-1 py-1.5 text-center text-xs transition ${
+            level === 'all' ? 'border-slate-900 bg-slate-100 ring-1 ring-slate-900' : 'border-slate-200 hover:border-slate-400'
+          }`}
+        >
+          <span className="block font-semibold text-slate-800">全部</span>
+          <span className="block tabular-nums text-slate-500">{total}</span>
+        </button>
+      </div>
 
       {items.length === 0 ? (
-        <p className="text-sm text-slate-500">目前沒有等級異動紀錄。</p>
+        <p className="text-sm text-slate-500">
+          {level === 'all' ? '目前沒有等級異動紀錄。' : `沒有變化後為 Level ${level} 的異動。`}
+        </p>
       ) : (
         <ul className="flex-1 space-y-1.5 overflow-y-auto pr-1">
           {items.map((event, idx) => {
@@ -76,7 +123,12 @@ export function DeviationPanel({ data, onSelect }: Props) {
                     <LevelChip level={event.levelBefore} />
                     <span className={`font-bold ${arrow.className}`}>{arrow.symbol}</span>
                     <LevelChip level={event.levelAfter} />
-                    <span className="ml-auto tabular-nums text-slate-400">
+                    {event.planned && (
+                      <span className="ml-auto rounded px-1 text-[10px] font-medium text-emerald-700 border border-dashed border-emerald-400">
+                        預計改善
+                      </span>
+                    )}
+                    <span className={`${event.planned ? '' : 'ml-auto '}tabular-nums text-slate-400`}>
                       {event.effectiveAt.slice(0, 10)}
                     </span>
                   </div>

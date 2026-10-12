@@ -1,8 +1,14 @@
 import { Link } from 'react-router-dom'
 
 import type { CheckMonitorResponse, CheckMonitorRow, CheckSlot, SlotState } from '../api/client'
+import { PhotoCheckButton } from './PhotoCheckButton'
 
-type Props = { data: CheckMonitorResponse | null; scopeLabel: string }
+type Props = {
+  data: CheckMonitorResponse | null
+  scopeLabel: string
+  /** 拍照點檢上傳後重抓 */
+  onChanged?: () => void
+}
 
 const SLOT: Record<SlotState, { label: string; className: string }> = {
   ok: { label: '已點檢・正常', className: 'bg-emerald-500' },
@@ -20,7 +26,8 @@ function hhmm(value: string) {
 function slotTitle(slot: CheckSlot) {
   const range = `${hhmm(slot.start)}–${hhmm(slot.end)}`
   const at = slot.inspectedAt ? `（${hhmm(slot.inspectedAt)} 點檢）` : ''
-  return `${range} ${SLOT[slot.state].label}${at}`
+  const photo = slot.photoUrl ? '・點擊看照片' : ''
+  return `${range} ${SLOT[slot.state].label}${at}${photo}`
 }
 
 /** 需要處理的排前面：有異常 → 有漏檢 → 完成度低 */
@@ -41,13 +48,24 @@ function Progress({ row }: { row: CheckMonitorRow }) {
   return (
     <div className="flex items-center gap-2">
       <div className="flex gap-0.5" role="img" aria-label={`本班完成 ${row.progress}%`}>
-        {row.slots.map((slot) => (
-          <span
-            key={slot.start}
-            title={slotTitle(slot)}
-            className={`h-3.5 w-5 rounded-sm ${SLOT[slot.state].className}`}
-          />
-        ))}
+        {row.slots.map((slot) =>
+          slot.photoUrl ? (
+            <a
+              key={slot.start}
+              href={slot.photoUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={slotTitle(slot)}
+              className={`h-3.5 w-5 rounded-sm ${SLOT[slot.state].className} hover:opacity-80`}
+            />
+          ) : (
+            <span
+              key={slot.start}
+              title={slotTitle(slot)}
+              className={`h-3.5 w-5 rounded-sm ${SLOT[slot.state].className}`}
+            />
+          ),
+        )}
       </div>
       <span className="w-10 text-right text-sm font-semibold tabular-nums text-slate-800">{row.progress}%</span>
     </div>
@@ -55,7 +73,7 @@ function Progress({ row }: { row: CheckMonitorRow }) {
 }
 
 /** Level 3 高風險項點檢監控：點檢項目來自「高風險項點檢」，執行狀況來自 AR 逐項點檢 */
-export function CheckMonitorTable({ data, scopeLabel }: Props) {
+export function CheckMonitorTable({ data, scopeLabel, onChanged }: Props) {
   const rows = data ? [...data.items].sort(compare) : []
 
   return (
@@ -122,7 +140,25 @@ export function CheckMonitorTable({ data, scopeLabel }: Props) {
                     <span className="mt-1 block whitespace-nowrap text-xs tabular-nums text-slate-400">
                       {row.completed}/{row.slots.length} 次 · 上次{' '}
                       {row.lastInspectedAt ? hhmm(row.lastInspectedAt) : '—'}
+                      {row.lastPhotoUrl && (
+                        <>
+                          {' · '}
+                          <a href={row.lastPhotoUrl} target="_blank" rel="noreferrer" className="underline">
+                            照片
+                          </a>
+                        </>
+                      )}
                     </span>
+                    {row.lastNote && (
+                      <span className="block text-xs text-red-600" title="最近一次點檢的異常說明">
+                        {row.lastNote}
+                      </span>
+                    )}
+                    {row.equipmentCode && (
+                      <div className="mt-1.5">
+                        <PhotoCheckButton item={row} onUploaded={() => onChanged?.()} compact />
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -141,6 +177,10 @@ export function CheckMonitorTable({ data, scopeLabel }: Props) {
       </div>
       <p className="mt-1.5 text-xs text-slate-400">
         每 2 小時一格，每格 20%；同一時段點檢多次只算一次。結果來自{' '}
+        <Link to="/ar/photo" className="underline hover:text-slate-600">
+          拍照點檢
+        </Link>
+        與{' '}
         <Link to="/ar/inspect" className="underline hover:text-slate-600">
           AR 點檢
         </Link>

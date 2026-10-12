@@ -268,3 +268,110 @@ def test_op_pcn_equipment_resolved_by_station(imported):
     assert op and {r.equipment_code for r in op} == {"A0003"}
     kpovs = {(k.kpov_no, k.equipment_code) for k in _kpovs(session, batch, attribute1="OP")}
     assert sum((r.kpov_no, r.equipment_code) in kpovs for r in op) == len(op)
+
+
+V3 = ROOT / "數據庫-1011.xlsx"
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_1011_improve_uses_excel_time_after_1008():
+    """1011 版：改善事件用修護報表的「改善時間」，不再是匯入時間；
+    「設備對應參考」少了 OP 區時沿用前批對照；鎖銅排設備強制為 OT00420118。"""
+    from app.services.lifecycle import build_states
+
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        import_workbook(session, str(V2), V2.name)
+        batch, report = import_workbook(session, str(V3), V3.name)
+
+        assert report.skipped_repair_rows == []
+        assert {k.equipment_code for k in _kpovs(session, batch, attribute1="OP")} == {
+            f"A000{i}" for i in range(1, 9)
+        }
+        by_station = collections.Counter(
+            (k.station, k.equipment_code) for k in _kpovs(session, batch, attribute1="CTP")
+        )
+        assert by_station[("鎖銅排", "OT00420118")] == 26
+        assert by_station[("鎖電感", "OT00420104")] == 26
+        codes = set(session.scalars(select(DimEquipment.equipment_code).where(DimEquipment.batch_id == batch.id)))
+        assert "OT00420118" in codes
+
+        improves = session.scalars(
+            select(FactLevelEvent).where(
+                FactLevelEvent.batch_id == batch.id, FactLevelEvent.event_type == "IMPROVE"
+            )
+        ).all()
+        dates = {e.effective_at.date() for e in improves}
+        assert dt.date(2025, 11, 17) in dates
+        # 每筆改善都對應到維修紀錄的改善時間，沒有任何一筆落在匯入時間
+        repair_times = {r.improvement_effective_at.date() for r in session.scalars(
+            select(FactRepair).where(FactRepair.batch_id == batch.id)) if r.improvement_effective_at}
+        assert dates <= repair_times
+
+        # 未來的改善（預計改善）不得提前影響現況等級
+        before = dt.datetime(2026, 10, 13, tzinfo=dt.timezone.utc)
+        after = dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc)
+        key = ("K00049", "A0004")
+        state_before = next(s for s in build_states(session, batch.id, as_of=before) if (s.kpov.kpov_no, s.kpov.equipment_code) == key)
+        state_after = next(s for s in build_states(session, batch.id, as_of=after) if (s.kpov.kpov_no, s.kpov.equipment_code) == key)
+        assert state_before.level_current != state_after.level_current
+
+
+def test_improve_without_time_is_not_import_time(imported):
+    """有「改善時間」欄但未填：不產生改善事件，也不用匯入時間代替。"""
+    from app.importer.level_events import derive_level_events
+    from app.importer.excel import ImportReport
+
+    session, batch, _ = imported
+    repair = session.scalars(
+        select(FactRepair).where(FactRepair.batch_id == batch.id, FactRepair.small_y_method_improved.is_not(None))
+    ).first()
+    saved = repair.improvement_effective_at
+    repair.improvement_effective_at = None
+    report = ImportReport()
+    session.query(FactLevelEvent).filter(FactLevelEvent.batch_id == batch.id).delete()
+    derive_level_events(session, batch, [repair], {}, report, improve_time_fallback=False)
+    assert not any(e["eventType"] == "IMPROVE" for e in report.level_events)
+    assert any("未填改善時間" in w for w in report.warnings)
+    repair.improvement_effective_at = saved
+    session.rollback()
+
+
+def test_photo_inspection_counts_in_monitor(imported):
+    session, batch, _ = imported
+    from app.models import CheckPhotoInspection
+
+    item = check_items(session, batch.id, {"A0007"})[0]
+    now = _local(15)
+    session.add(
+        CheckPhotoInspection(
+            equipment_code=item.equipment_code,
+            kpov_no=item.kpov_no,
+            check_content=item.check_content,
+            status="ok",
+            photo_url="/api/ar/uploads/checks/x.jpg",
+            inspected_at=_local(14, 30),
+        )
+    )
+    session.flush()
+    row = monitor_rows(session, [item], now=now)[0]
+    assert row["slots"][3]["state"] == "ok"
+    assert row["slots"][3]["photoUrl"] == "/api/ar/uploads/checks/x.jpg"
+    assert row["lastPhotoUrl"] == "/api/ar/uploads/checks/x.jpg"
+    session.rollback()
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_1011_into_empty_db_uses_default_op_mapping():
+    """1011 版沒有 OP 對照區、資料庫也沒有前批：以內建 OP 對照補上 A000N。"""
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        batch, report = import_workbook(session, str(V3), V3.name)
+        assert report.skipped_repair_rows == []
+        assert report.row_counts["repairs"] == 27
+        op = _kpovs(session, batch, attribute1="OP")
+        assert {k.equipment_code for k in op} == {f"A000{i}" for i in range(1, 9)}
+        codes = set(session.scalars(select(DimEquipment.equipment_code).where(DimEquipment.batch_id == batch.id)))
+        assert {f"A000{i}" for i in range(1, 9)} <= codes

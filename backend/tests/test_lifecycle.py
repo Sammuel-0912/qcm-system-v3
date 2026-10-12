@@ -32,7 +32,8 @@ def test_ac1_row_counts(imported):
     assert counts["kpovCtp"] == 244       # 第 246-247 列為空白列與殘留公式，非資料
     assert counts["kpovOp"] == 23         # OP 站無設備代碼，不得被匯入器丟棄
     assert counts["alarms"] == 17069
-    assert counts["equipment"] == 132
+    # Dim_Equipment 132 台 + OP 人工站 KPOV 用到的 A0001／A0003／A0007
+    assert counts["equipment"] == 135
     assert counts["errorCodes"] == 8
     assert counts["detectionMethods"] == 10
     assert counts["repairs"] == 3
@@ -117,16 +118,24 @@ def test_ac12_other_equipment_not_affected(imported):
 
 
 @pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
-def test_op_rows_have_no_equipment_and_no_events(imported):
-    """OP 站沒有設備代碼，因此不會有等級異動事件（事件靠維修報表的設備 ID 定位）。"""
+def test_op_rows_map_to_op_equipment(imported):
+    """OP 人工站依內建對照補上設備代碼（A000N）；對照表沒有的 OP 站別維持無設備、以站別定位。
+    舊版檔沒有 OP 的維修紀錄，因此不會有等級異動事件。"""
     session, batch, _ = imported
     from app.services.lifecycle import build_states
 
     op = [s for s in build_states(session, batch.id) if s.kpov.attribute1 == "OP"]
     assert len(op) == 23
-    assert all(s.kpov.equipment_code is None for s in op)
+    codes = {s.kpov.station: s.kpov.equipment_code for s in op}
+    assert codes["鎖後蓋"] == "A0003"
+    assert codes["插線/理線"] == "A0001"
+    assert codes["固定絕緣片"] == "A0007"  # 別名 -> 固定絕緣片/PWB板
+    assert codes["鎖銅排"] is None  # 舊版的 OP 鎖銅排不在人工站對照中
     assert all(not s.events for s in op)
-    assert all(s.target_id.startswith("op:") for s in op)
+    assert all(
+        s.target_id == (f"equip:{s.kpov.equipment_code}" if s.kpov.equipment_code else f"op:{s.kpov.station}")
+        for s in op
+    )
 
 
 def test_station_name_is_not_unique_across_attributes(imported):

@@ -1,6 +1,8 @@
 """篩選與彙總查詢 — spec.md §7 / §11.1（D-01 線別繼承）。"""
 from __future__ import annotations
 
+import datetime as dt
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -176,12 +178,18 @@ def trend_payload(
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code) for s in scoped if s.kpov.equipment_code}
     has_equipment = bool(allowed)
 
+    now = dt.datetime.now(dt.timezone.utc)
     buckets: dict[str, dict[str, int]] = {}
     for state in scoped:
         for event in state.events:
             if (state.kpov.kpov_no, state.kpov.equipment_code) not in allowed:
                 continue
             effective = event.effective_at
+            if effective.tzinfo is None:
+                effective = effective.replace(tzinfo=dt.timezone.utc)
+            # 預計改善（改善時間尚未到）不計入趨勢，到期後自然出現
+            if effective > now:
+                continue
             period = effective.strftime("%Y-%m") if granularity == "month" else effective.strftime("%Y-W%V")
             entry = buckets.setdefault(period, {"escalated": 0, "improved": 0})
             if event.transition == "ESCALATED":

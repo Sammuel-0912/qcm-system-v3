@@ -1,18 +1,29 @@
 """API 端點 — spec.md §7。"""
 from __future__ import annotations
 
+import datetime as dt
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
-from ...models import DimEquipment, FactChangeRecord, FactLevelEvent, FactRepair, ImportBatch
+from ...models import (
+    CheckPhotoInspection,
+    DimEquipment,
+    FactChangeRecord,
+    FactCheckItem,
+    FactLevelEvent,
+    FactRepair,
+    ImportBatch,
+)
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
@@ -336,6 +347,7 @@ def list_events(
     attribute: str | None = None,
     target: str | None = None,
     transition: str | None = None,
+    level_after: int | None = Query(None, alias="levelAfter", ge=0, le=3),
     limit: int = Query(50, le=500),
     session: Session = Depends(get_session),
 ):
@@ -351,13 +363,23 @@ def list_events(
         .order_by(FactLevelEvent.effective_at.desc(), FactLevelEvent.id.desc())
     ).all()
 
+    now = dt.datetime.now(dt.timezone.utc)
     items = []
+    # 各「變化後 Level」的筆數：供總覽的 Level 篩選顯示，不受 levelAfter 與 limit 影響
+    level_counts = {str(level): 0 for level in range(4)}
     for e in events:
         key = (e.kpov_no, e.equipment_code)
         if key not in allowed:
             continue
         if transition and e.transition != transition:
             continue
+        if e.level_after is not None and str(e.level_after) in level_counts:
+            level_counts[str(e.level_after)] += 1
+        if level_after is not None and e.level_after != level_after:
+            continue
+        if len(items) >= limit:
+            continue
+        effective = e.effective_at if e.effective_at.tzinfo else e.effective_at.replace(tzinfo=dt.timezone.utc)
         kpov = names.get(key)
         items.append(
             {
@@ -373,15 +395,16 @@ def list_events(
                 "defectDesc": e.defect_desc,
                 "improvement": e.improvement,
                 "repairSerial": e.repair_serial,
+                # 改善時間在未來：預計改善，尚未生效
+                "planned": effective > now,
             }
         )
-        if len(items) >= limit:
-            break
 
     escalated_open = sum(1 for s in scoped if s.is_escalated_open)
     improved = sum(1 for s in scoped if s.is_improved)
     return {
         "summary": {"escalatedOpen": escalated_open, "improved": improved, "totalEvents": len(items)},
+        "levelCounts": level_counts,
         "items": items,
     }
 
@@ -430,3 +453,94 @@ def presence_heartbeat(body: PresenceIn):
 def presence_leave(body: PresenceIn):
     # 由 navigator.sendBeacon 在關閉分頁時呼叫，回應不會被讀取
     presence.leave(body.sid)
+
+
+# --------------------------------------------------------------------------- 拍照點檢
+
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+PHOTO_MAX_BYTES = 10 * 1024 * 1024
+PHOTO_SUBDIR = "checks"
+
+
+@router.get("/check-items")
+def get_check_items(station: str | None = None, session: Session = Depends(get_session)):
+    """拍照點檢頁：站別清單，與指定站別的點檢項目＋本班進度。"""
+    batch = _batch_or_404(session)
+    items = check_items(session, batch.id)
+    stations = sorted({i.station for i in items if i.station and i.equipment_code})
+    selected = [i for i in items if i.station == station and i.equipment_code] if station else []
+    return {
+        "stations": stations,
+        "items": monitor_rows(session, selected),
+        "shift": shift_payload(),
+    }
+
+
+@router.post("/check-inspections", status_code=201)
+def create_check_inspection(
+    equipment_code: str = Form(..., alias="equipmentCode"),
+    kpov_no: str | None = Form(None, alias="kpovNo"),
+    check_content: str = Form(..., alias="checkContent"),
+    status: str = Form("ok", pattern="^(ok|warn)$"),
+    note: str | None = Form(None),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    """拍照點檢：照片上傳成功即記一次點檢（預設正常，可回報異常）。"""
+    batch = _batch_or_404(session)
+    content = check_content.strip()
+    item = session.scalars(
+        select(FactCheckItem).where(
+            FactCheckItem.batch_id == batch.id,
+            FactCheckItem.equipment_code == equipment_code,
+            FactCheckItem.check_content == content,
+            (FactCheckItem.kpov_no == kpov_no) if kpov_no else FactCheckItem.kpov_no.is_(None),
+        )
+    ).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="找不到這個點檢項目，請重新整理後再試")
+
+    ext = Path(file.filename or "").suffix.lower() or ".jpg"
+    if ext not in PHOTO_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"不支援的圖片格式 {ext}；可用：{', '.join(sorted(PHOTO_EXTENSIONS))}",
+        )
+
+    folder = AR_UPLOAD_DIR / PHOTO_SUBDIR
+    folder.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    target = folder / filename
+    size = 0
+    try:
+        with target.open("wb") as fh:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > PHOTO_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="照片超過 10 MB，請降低解析度後再上傳")
+                fh.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=422, detail="照片是空的，請重新拍照")
+
+        record = CheckPhotoInspection(
+            equipment_code=equipment_code,
+            kpov_no=kpov_no,
+            check_content=content,
+            status=status,
+            note=(note or "").strip() or None,
+            photo_url=f"{AR_UPLOAD_URL_PREFIX}/{PHOTO_SUBDIR}/{filename}",
+        )
+        session.add(record)
+        session.commit()
+    except BaseException:
+        # 只有照片與紀錄都成功才算點檢；任一步失敗就不留孤兒檔
+        session.rollback()
+        target.unlink(missing_ok=True)
+        raise
+
+    return {
+        "id": record.id,
+        "status": record.status,
+        "photoUrl": record.photo_url,
+        "inspectedAt": record.inspected_at.isoformat(),
+    }

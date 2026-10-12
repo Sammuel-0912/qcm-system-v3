@@ -149,7 +149,8 @@ _REPAIR_COMMON: dict[str, str] = {
     "設備ID": "equipment_code",
     "KPOV 编号": "kpov_no",
     "改善措施": "improvement",
-    # D-03：來源 Excel 若新增此欄則自動採用為 IMPROVE 生效時間
+    # D-03：IMPROVE 生效時間。1011 版起修護報表提供「改善時間」
+    "改善時間": "improvement_effective_at",
     "改善生效日": "improvement_effective_at",
 }
 
@@ -183,9 +184,23 @@ REPAIR_REQUIRED = ("KPOV 编号",)
 EQUIPMENT_REF_NAME = "設備名稱"
 EQUIPMENT_REF_CODES = ("設備ID", "設備代碼")
 
-# 站位 -> 設備代碼的強制修正。來源資料把「自動3」誤植為 OT00420104（自動4 的設備），
-# 現場確認自動3 是 OT00420118。
-EQUIPMENT_OVERRIDES: dict[str, str] = {"自動3": "OT00420118"}
+# CTP 站別 -> 設備代碼的強制修正。來源資料曾把「鎖銅排」的設備誤植為 OT00420104
+# （鎖電感的設備），現場確認鎖銅排是 OT00420118。
+# 以站別名稱為鍵而非站位：1011 版起「自動3／自動4」的站位標籤對調過，站別名稱才穩定。
+EQUIPMENT_OVERRIDES: dict[str, str] = {"鎖銅排": "OT00420118"}
+
+# OP 人工站設備對照（使用者確認的「設備對應參考」OP 區）。1011 版的 Excel 移除了這一區，
+# 空資料庫直接匯入時以此為預設；檔案若有提供則以檔案為準。
+DEFAULT_OP_EQUIPMENT: tuple[tuple[str, str, str], ...] = (
+    ("人工一", "插線/理線", "A0001"),
+    ("人工二", "固定散熱片", "A0002"),
+    ("人工三", "鎖後蓋", "A0003"),
+    ("人工四", "固定銅排/ 電感", "A0004"),
+    ("人工五", "固定保險絲/軟銅排", "A0005"),
+    ("人工六", "軟銅排1", "A0006"),
+    ("人工七", "固定絕緣片/PWB板", "A0007"),
+    ("人工八", "鎖PWB板", "A0008"),
+)
 
 # 只用於 OP（人工站）的站別別名：高風險項點檢等表沿用舊站名，對不到「設備對應參考」
 STATION_ALIASES_OP: dict[str, str] = {

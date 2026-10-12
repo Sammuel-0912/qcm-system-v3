@@ -369,3 +369,29 @@ class ArInspection(Base):
     check_content: Mapped[str | None] = mapped_column(Text)
 
     device: Mapped[ArDevice] = relationship(back_populates="inspections")
+
+
+class CheckPhotoInspection(Base):
+    """拍照點檢：上傳照片即視為完成一次高風險項點檢（免掃 AR marker）。
+
+    不併入 ar_inspection：該表的 marker_id 是 NOT NULL 外鍵，拍照點檢沒有 marker。
+    與 ar_inspection 的逐項紀錄一樣，以 (設備代碼, KPOV 編號, 點檢內容) 自然鍵對到
+    fact_check_item，跨匯入批次不斷裂。
+    """
+
+    __tablename__ = "check_photo_inspection"
+    __table_args__ = (
+        CheckConstraint(f"status IN {AR_STATUSES}", name="ck_check_photo_status"),
+        Index("ix_check_photo_item_time", "equipment_code", "inspected_at"),
+    )
+
+    id: Mapped[int] = _pk()
+    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+    check_content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="ok")
+    note: Mapped[str | None] = mapped_column(Text)
+    photo_url: Mapped[str] = mapped_column(Text, nullable=False)
+    inspected_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
+    )

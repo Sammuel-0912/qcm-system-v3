@@ -2,8 +2,12 @@
 
 一筆維修紀錄最多產生兩筆事件：
   DEGRADE — 依「變化後」偵測方式，生效時間 = 測試時間（不良被發現的時刻）
-  IMPROVE — 依「提升後」偵測方式，生效時間 = 改善生效日，無則取匯入批次時間
-            （不得使用「修復時間」，那是 touchup 完工時間，見 REQ-LIFE-04 / D-03）
+  IMPROVE — 依「提升後」偵測方式，生效時間 = 修護報表的「改善時間」
+            （不得使用「修復時間」，那是 touchup 完工時間，見 REQ-LIFE-04 / D-03）。
+            改善時間晚於現在者為「預計改善」：事件照樣入帳，但現況等級要到該時間才採用
+            （見 lifecycle.build_states 的 as_of）。
+            來源檔有「改善時間」欄但該列沒填 -> 不產生 IMPROVE，列入匯入報告；
+            只有完全沒有此欄的舊版檔案，才退回以匯入批次時間代替。
 
 事件以 (維修序號, KPOV編號, 設備代碼, 事件類型) 為自然鍵去重（REQ-LIFE-05）。
 """
@@ -33,6 +37,8 @@ def derive_level_events(
     repairs: list[FactRepair],
     method_scores: dict[str, int],
     report,
+    *,
+    improve_time_fallback: bool = True,
 ) -> None:
     batch_time = batch.imported_at or dt.datetime.now(dt.timezone.utc)
 
@@ -64,13 +70,15 @@ def derive_level_events(
 
         plan = [
             ("DEGRADE", repair.small_y_method_after, repair.big_y_method_after, repair.tested_at or batch_time),
-            (
-                "IMPROVE",
-                repair.small_y_method_improved,
-                repair.big_y_method_improved,
-                repair.improvement_effective_at or batch_time,
-            ),
         ]
+        improve_at = repair.improvement_effective_at or (batch_time if improve_time_fallback else None)
+        if improve_at is not None:
+            plan.append(("IMPROVE", repair.small_y_method_improved, repair.big_y_method_improved, improve_at))
+        elif repair.small_y_method_improved or repair.big_y_method_improved:
+            report.warnings.append(
+                f"維修紀錄 {repair.serial_no or '（無序號）'} · {repair.kpov_no} 有改善後偵測方式但未填改善時間，"
+                "未產生改善事件"
+            )
 
         for event_type, small_method, big_method, effective_at in plan:
             small = _resolve(small_method, method_scores)

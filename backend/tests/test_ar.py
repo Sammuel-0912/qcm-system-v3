@@ -267,3 +267,63 @@ def test_history_includes_pcn_and_plant_wide_ecn(client):
     # OP 站的 PCN（Excel 未填設備ID）也要出現：鎖後蓋 = A0003
     pcn_op = client.get("/api/v1/kpov/K00001/A0003/history").json()
     assert sorted(c["kind"] for c in pcn_op["changes"]) == ["ECN", "PCN"]
+
+
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+def test_photo_upload_records_inspection(client):
+    with V2.open("rb") as fh:
+        client.post(
+            "/api/v1/import",
+            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    body = client.get("/api/v1/check-items").json()
+    assert "固定絕緣片" in body["stations"]
+    items = client.get("/api/v1/check-items", params={"station": "鎖PWB"}).json()["items"]
+    assert len(items) == 3
+    item = items[0]
+    form = {
+        "equipmentCode": item["equipmentCode"],
+        "kpovNo": item["kpovNo"],
+        "checkContent": item["checkContent"],
+        "status": "warn",
+        "note": "治具缺角",
+    }
+    uploaded = client.post(
+        "/api/v1/check-inspections", data=form, files={"file": ("p.jpg", b"\xff\xd8fakejpeg", "image/jpeg")}
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    photo = uploaded.json()["photoUrl"]
+    assert client.get(photo).content == b"\xff\xd8fakejpeg"
+
+    rows = client.get("/api/v1/check-monitor", params={"target": "equip:OT00420112"}).json()["items"]
+    row = next(r for r in rows if r["id"] == item["id"])
+    assert row["status"] == "warn" and row["lastPhotoUrl"] == photo and row["lastNote"] == "治具缺角"
+
+    # 項目不存在 -> 404；格式不符 -> 422，且都不留檔
+    bad = client.post(
+        "/api/v1/check-inspections",
+        data={**form, "checkContent": "不存在"},
+        files={"file": ("p.jpg", b"x", "image/jpeg")},
+    )
+    assert bad.status_code == 404
+    wrong = client.post("/api/v1/check-inspections", data=form, files={"file": ("p.exe", b"x", "x/y")})
+    assert wrong.status_code == 422
+    from app.config import AR_UPLOAD_DIR
+
+    assert len(list((AR_UPLOAD_DIR / "checks").iterdir())) == 1
+
+
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+def test_events_level_after_filter(client):
+    with V2.open("rb") as fh:
+        client.post(
+            "/api/v1/import",
+            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    full = client.get("/api/v1/events", params={"limit": 500}).json()
+    counts = full["levelCounts"]
+    assert sum(counts.values()) == len(full["items"])
+    l3 = client.get("/api/v1/events", params={"levelAfter": 3, "limit": 500}).json()
+    assert len(l3["items"]) == counts["3"] > 0
+    assert {i["levelAfter"] for i in l3["items"]} == {3}
+    assert l3["levelCounts"] == counts

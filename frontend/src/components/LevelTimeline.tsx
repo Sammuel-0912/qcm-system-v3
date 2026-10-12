@@ -192,12 +192,13 @@ export function LevelTimeline({ data }: Props) {
   const siteName = hotspot?.displayName
   const showSiteName = Boolean(siteName && siteName !== data.station)
 
-  // 時間軸由新到舊：現況 → 維修事件與 PCN/ECN 依日期交錯（倒序）→ 基準。
+  // 時間軸由新到舊：預計改善 → 現況 → 維修事件與 PCN/ECN 依日期交錯（倒序）→ 基準。
+  // 預計改善（改善時間在未來）放在「現況」之上，表示尚未發生。
   // 同一天時 PCN/ECN 排在維修事件之後（較舊）：變更先切入，之後才觀察到不良。
   type Node =
     | { kind: 'event'; at: string; event: HistoryResponse['events'][number]; idx: number }
     | { kind: 'change'; at: string; change: ChangeRecord; idx: number }
-  const nodes: Node[] = [
+  const sorted = [
     ...data.events.map((event, idx) => ({ kind: 'event' as const, at: event.effectiveAt, event, idx })),
     ...(data.changes ?? []).map((change, idx) => ({
       kind: 'change' as const,
@@ -211,6 +212,13 @@ export function LevelTimeline({ data }: Props) {
     if (a.kind !== b.kind) return a.kind === 'event' ? -1 : 1
     return a.kind === 'event' ? b.at.localeCompare(a.at) || b.idx - a.idx : b.idx - a.idx
   })
+  const now = Date.now()
+  const isFuture = (n: Node) => n.kind === 'event' && n.event.type === 'IMPROVE' && new Date(n.at).getTime() > now
+  const nodes: (Node | { kind: 'current' })[] = [
+    ...sorted.filter(isFuture),
+    { kind: 'current' },
+    ...sorted.filter((n) => !isFuture(n)),
+  ]
 
   return (
     <div>
@@ -226,20 +234,25 @@ export function LevelTimeline({ data }: Props) {
       </p>
 
       <ol className="relative space-y-4 border-l-2 border-slate-200 pl-5">
-        <li className="relative">
-          <span className="absolute -left-[27px] top-1 h-3 w-3 rounded-full border-2 border-white bg-slate-900" />
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-700">現況</span>
-            <Level level={data.current.level} />
-          </div>
-        </li>
-
         {nodes.map((node) => {
+          if (node.kind === 'current') {
+            return (
+              <li key="current" className="relative">
+                <span className="absolute -left-[27px] top-1 h-3 w-3 rounded-full border-2 border-white bg-slate-900" />
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-slate-700">現況</span>
+                  <Level level={data.current.level} />
+                </div>
+              </li>
+            )
+          }
           if (node.kind === 'change') {
             return <ChangeNode key={`change-${node.idx}`} change={node.change} />
           }
           const { event, idx } = node
           const isDegrade = event.type === 'DEGRADE'
+          // 改善時間在未來：預計改善，現況等級尚未採用
+          const isPlanned = !isDegrade && new Date(event.effectiveAt).getTime() > Date.now()
           const repair = event.repair
           // 區分兩種「沒東西」：後端沒帶回維修紀錄（多半是後端未更新或未重啟），
           // 與維修紀錄本身欄位空白。混為一談的話，出問題時只能靠猜。
@@ -254,23 +267,33 @@ export function LevelTimeline({ data }: Props) {
             : [{ term: '改善措施', value: event.improvement || field(repair?.improvement) }]
 
           return (
-            <li key={`${event.repairSerial}-${event.type}-${idx}`} className="relative">
+            <li
+              key={`${event.repairSerial}-${event.type}-${idx}`}
+              className={`relative ${isPlanned ? 'opacity-70' : ''}`}
+            >
               <span
-                className={`absolute -left-[27px] top-1 h-3 w-3 rounded-full border-2 border-white ${
-                  event.transition === 'ESCALATED'
+                className={`absolute -left-[27px] top-1 h-3 w-3 rounded-full border-2 ${
+                  isPlanned
+                    ? 'border-dashed border-emerald-500 bg-white'
+                    : 'border-white ' +
+                      (event.transition === 'ESCALATED'
                     ? 'bg-red-500'
                     : event.transition === 'IMPROVED'
                       ? 'bg-emerald-500'
-                      : 'bg-slate-400'
+                      : 'bg-slate-400')
                 }`}
               />
               <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
-                    isDegrade ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                    isDegrade
+                      ? 'bg-red-100 text-red-700'
+                      : isPlanned
+                        ? 'bg-white text-emerald-700 border border-dashed border-emerald-400'
+                        : 'bg-emerald-100 text-emerald-700'
                   }`}
                 >
-                  {isDegrade ? '不良發生' : '改善完成'}
+                  {isDegrade ? '不良發生' : isPlanned ? '預計改善' : '改善完成'}
                 </span>
                 <Level level={event.levelBefore} />
                 <span className="text-slate-400">→</span>
