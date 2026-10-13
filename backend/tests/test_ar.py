@@ -327,3 +327,53 @@ def test_events_level_after_filter(client):
     assert len(l3["items"]) == counts["3"] > 0
     assert {i["levelAfter"] for i in l3["items"]} == {3}
     assert l3["levelCounts"] == counts
+
+
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+def test_level_changes_window_kind_and_paging(client):
+    import datetime as dt
+    import math
+
+    with V2.open("rb") as fh:
+        client.post(
+            "/api/v1/import",
+            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    now = dt.datetime.now(dt.timezone.utc)
+    events = client.get("/api/v1/events", params={"limit": 500}).json()["items"]
+
+    def at(value: str) -> dt.datetime:
+        # SQLite 讀回的時間不帶時區，一律視為 UTC
+        parsed = dt.datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+
+    def expected(transition: str, days: int) -> int:
+        since = now - dt.timedelta(days=days)
+        return sum(1 for e in events if e["transition"] == transition and since <= at(e["effectiveAt"]) <= now)
+
+    year = client.get("/api/v1/level-changes", params={"window": "year"}).json()
+    assert year["counts"] == {"escalated": expected("ESCALATED", 365), "improved": expected("IMPROVED", 365)}
+    assert year["counts"]["escalated"] > 0
+    assert {i["transition"] for i in year["items"]} == {"ESCALATED"}
+
+    improved = client.get("/api/v1/level-changes", params={"window": "year", "kind": "improved"}).json()
+    assert {i["transition"] for i in improved["items"]} <= {"IMPROVED"}
+    assert all(not i["improvePlanned"] for i in improved["items"])
+
+    # 分頁：每頁 2 筆，頁數 = ceil(total / 2)；超出的頁碼收斂到最後一頁
+    first = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 2}).json()
+    assert first["pages"] == math.ceil(first["total"] / 2) and len(first["items"]) <= 2
+    last = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 2, "page": 999}).json()
+    assert last["page"] == last["pages"]
+    seen = [
+        (i["kpovNo"], i["equipmentCode"], i["effectiveAt"])
+        for p in range(1, first["pages"] + 1)
+        for i in client.get(
+            "/api/v1/level-changes", params={"window": "year", "pageSize": 2, "page": p}
+        ).json()["items"]
+    ]
+    assert len(seen) == first["total"]
+
+    day = client.get("/api/v1/level-changes", params={"window": "day"}).json()
+    assert day["counts"]["escalated"] == expected("ESCALATED", 1)
+    assert client.get("/api/v1/level-changes", params={"window": "decade"}).status_code == 422
