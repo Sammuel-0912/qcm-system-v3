@@ -6,7 +6,9 @@ import { AppShell } from '../components/AppShell'
 import {
   api,
   type CheckMonitorResponse,
-  type EventsResponse,
+  type ChangeKind,
+  type ChangeWindow,
+  type LevelChangesResponse,
   type FiltersResponse,
   type HistoryResponse,
   type KpovItem,
@@ -19,6 +21,7 @@ import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
+import { LevelCountBar } from '../components/LevelCountBar'
 import { LayoutMap } from '../components/LayoutMap'
 import { LevelTimeline } from '../components/LevelTimeline'
 import { MultiSelect } from '../components/MultiSelect'
@@ -59,9 +62,11 @@ export default function QualityPage() {
   const [state, setState] = useState(() => readUrl(searchParams))
   const [filters, setFilters] = useState<FiltersResponse | null>(null)
   const [quadrant, setQuadrant] = useState<QuadrantResponse | null>(null)
-  const [events, setEvents] = useState<EventsResponse | null>(null)
-  // 等級異動總覽的「變化後 Level」篩選：null = 尚未決定（載入後自動選最嚴重且有資料的 Level）
-  const [eventLevel, setEventLevel] = useState<string | null>(null)
+  // 等級異動總覽：時間區間 × 惡化／已改善 × 頁碼（後端分頁，每頁 10 筆）
+  const [changes, setChanges] = useState<LevelChangesResponse | null>(null)
+  const [changeWindow, setChangeWindow] = useState<ChangeWindow>('month')
+  const [changeKind, setChangeKind] = useState<ChangeKind>('escalated')
+  const [changePage, setChangePage] = useState(1)
   const [checks, setChecks] = useState<CheckMonitorResponse | null>(null)
   const [trend, setTrend] = useState<TrendResponse | null>(null)
   const [selectedLevel, setSelectedLevel] = useState<number | null>(null)
@@ -100,29 +105,22 @@ export default function QualityPage() {
     }
   }, [state.view, station, line, attribute])
 
-  // 等級異動總覽：依「變化後 Level」篩選，清單才不會太長
-  const loadEvents = useCallback(async () => {
+  const loadChanges = useCallback(async () => {
     try {
-      const levelAfter = eventLevel && eventLevel !== 'all' ? eventLevel : undefined
-      const e = await api.events({ station, line, attribute, levelAfter })
-      if (eventLevel === null) {
-        const counts = e.levelCounts ?? {}
-        const worst = ['3', '2', '1', '0'].find((level) => (counts[level] ?? 0) > 0)
-        if (worst) {
-          setEventLevel(worst) // 觸發以該 Level 重抓
-          return
-        }
-        setEventLevel('all')
-      }
-      setEvents(e)
+      setChanges(
+        await api.levelChanges({ station, line, attribute, window: changeWindow, kind: changeKind, page: changePage }),
+      )
     } catch {
-      setEvents(null)
+      setChanges(null)
     }
-  }, [eventLevel, station, line, attribute])
+  }, [station, line, attribute, changeWindow, changeKind, changePage])
 
   useEffect(() => {
-    void loadEvents()
-  }, [loadEvents, reloadKey])
+    void loadChanges()
+  }, [loadChanges, reloadKey])
+
+  // 篩選範圍變了，回到第 1 頁
+  useEffect(() => setChangePage(1), [station, line, attribute])
 
   // 下半部（趨勢 + 點檢監控）吃 layout 選取；未選時沿用上方篩選範圍
   const bottomScope = useMemo(
@@ -309,13 +307,23 @@ export default function QualityPage() {
                   onSelect={setSelectedLevel}
                 />
               )}
+              {quadrant && <LevelCountBar counts={quadrant.scope} onSelect={setSelectedLevel} />}
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-4">
               <DeviationPanel
-                data={events}
+                data={changes}
+                window={changeWindow}
+                kind={changeKind}
+                onWindowChange={(w) => {
+                  setChangeWindow(w)
+                  setChangePage(1)
+                }}
+                onKindChange={(k) => {
+                  setChangeKind(k)
+                  setChangePage(1)
+                }}
+                onPageChange={setChangePage}
                 onSelect={openHistory}
-                level={eventLevel ?? 'all'}
-                onLevelChange={setEventLevel}
               />
             </div>
           </section>

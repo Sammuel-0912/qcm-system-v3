@@ -1,15 +1,23 @@
-import type { EventsResponse } from '../api/client'
+import type { ChangeKind, ChangeWindow, LevelChangesResponse } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
 
 type Props = {
-  data: EventsResponse | null
+  data: LevelChangesResponse | null
+  window: ChangeWindow
+  kind: ChangeKind
+  onWindowChange: (window: ChangeWindow) => void
+  onKindChange: (kind: ChangeKind) => void
+  onPageChange: (page: number) => void
   onSelect: (kpovNo: string, equipmentCode: string) => void
-  /** 「變化後 Level」篩選：'0'–'3' 或 'all' */
-  level: string
-  onLevelChange: (level: string) => void
 }
 
-const LEVEL_OPTIONS = ['0', '1', '2', '3'] as const
+// 天／週／月／年 = 近 1／7／30／365 天（滾動區間）
+const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
+  { value: 'day', label: '天', hint: '近 1 天' },
+  { value: 'week', label: '週', hint: '近 7 天' },
+  { value: 'month', label: '月', hint: '近 30 天' },
+  { value: 'year', label: '年', hint: '近 365 天' },
+]
 
 function LevelChip({ level }: { level: number | null }) {
   if (level === null) return <span className="text-slate-400">—</span>
@@ -23,120 +31,157 @@ function LevelChip({ level }: { level: number | null }) {
   )
 }
 
-const ARROW: Record<string, { symbol: string; className: string }> = {
-  ESCALATED: { symbol: '↑', className: 'text-red-600' },
-  IMPROVED: { symbol: '↓', className: 'text-emerald-600' },
-  UNCHANGED: { symbol: '→', className: 'text-slate-400' },
-}
-
-export function DeviationPanel({ data, onSelect, level, onLevelChange }: Props) {
-  if (!data) {
-    return <div className="text-sm text-slate-500">載入中…</div>
-  }
-
-  const { summary, items } = data
-  const escalated = summary.escalatedOpen
-  const counts = data.levelCounts ?? {}
-  const total = LEVEL_OPTIONS.reduce((sum, l) => sum + (counts[l] ?? 0), 0)
+export function DeviationPanel({
+  data,
+  window,
+  kind,
+  onWindowChange,
+  onKindChange,
+  onPageChange,
+  onSelect,
+}: Props) {
+  const windowHint = WINDOWS.find((w) => w.value === window)?.hint
+  const cards: { value: ChangeKind; label: string; tone: string; active: string }[] = [
+    {
+      value: 'escalated',
+      label: '惡化',
+      tone: 'border-red-200 bg-red-50 text-red-700',
+      active: 'ring-2 ring-red-500',
+    },
+    {
+      value: 'improved',
+      label: '已改善',
+      tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      active: 'ring-2 ring-emerald-500',
+    },
+  ]
 
   return (
     <div className="flex h-full flex-col">
-      <h2 className="mb-3 text-base font-semibold text-slate-800">等級異動總覽</h2>
-
-      <div className="mb-4 grid grid-cols-2 gap-3">
-        <div
-          className={`rounded-lg border p-3 ${
-            escalated > 0 ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50'
-          }`}
-        >
-          <div className={`text-2xl font-bold ${escalated > 0 ? 'text-red-700' : 'text-slate-700'}`}>
-            {escalated}
-          </div>
-          <div className={`text-xs ${escalated > 0 ? 'text-red-700' : 'text-slate-500'}`}>惡化中</div>
-        </div>
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-          <div className="text-2xl font-bold text-emerald-700">{summary.improved}</div>
-          <div className="text-xs text-emerald-700">已改善</div>
-        </div>
-      </div>
-
-      <div className="mb-2 flex items-baseline justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">最近異動</span>
-        <span className="text-xs text-slate-400">依變化後等級</span>
-      </div>
-
-      <div className="mb-3 grid grid-cols-5 gap-1" role="tablist" aria-label="依變化後等級篩選">
-        {LEVEL_OPTIONS.map((l) => {
-          const active = level === l
-          const n = counts[l] ?? 0
-          return (
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-semibold text-slate-800">等級異動總覽</h2>
+        <div className="ml-auto inline-flex rounded-md border border-slate-200 p-0.5" role="tablist" aria-label="時間範圍">
+          {WINDOWS.map((w) => (
             <button
-              key={l}
+              key={w.value}
               type="button"
               role="tab"
-              aria-selected={active}
-              onClick={() => onLevelChange(l)}
-              className={`rounded-md border px-1 py-1.5 text-center text-xs transition ${
-                active ? 'border-slate-900 ring-1 ring-slate-900' : 'border-slate-200 hover:border-slate-400'
-              } ${n === 0 ? 'opacity-50' : ''}`}
-              style={{ backgroundColor: active ? LEVEL_COLORS[Number(l)] : undefined }}
+              aria-selected={window === w.value}
+              title={w.hint}
+              onClick={() => onWindowChange(w.value)}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                window === w.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
             >
-              <span className="block font-semibold text-slate-800">Level {l}</span>
-              <span className="block tabular-nums text-slate-500">{n}</span>
+              {w.label}
             </button>
-          )
-        })}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={level === 'all'}
-          onClick={() => onLevelChange('all')}
-          className={`rounded-md border px-1 py-1.5 text-center text-xs transition ${
-            level === 'all' ? 'border-slate-900 bg-slate-100 ring-1 ring-slate-900' : 'border-slate-200 hover:border-slate-400'
-          }`}
-        >
-          <span className="block font-semibold text-slate-800">全部</span>
-          <span className="block tabular-nums text-slate-500">{total}</span>
-        </button>
+          ))}
+        </div>
       </div>
 
-      {items.length === 0 ? (
-        <p className="text-sm text-slate-500">
-          {level === 'all' ? '目前沒有等級異動紀錄。' : `沒有變化後為 Level ${level} 的異動。`}
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        {cards.map((card) => (
+          <button
+            key={card.value}
+            type="button"
+            aria-pressed={kind === card.value}
+            onClick={() => onKindChange(card.value)}
+            className={`rounded-lg border p-3 text-left transition hover:brightness-95 ${card.tone} ${
+              kind === card.value ? card.active : ''
+            }`}
+          >
+            <div className="text-2xl font-bold">{data ? data.counts[card.value] : '—'}</div>
+            <div className="text-xs underline underline-offset-2">
+              {card.label}
+              <span className="ml-1 opacity-70">· {windowHint}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {!data ? (
+        <p className="text-sm text-slate-500">載入中…</p>
+      ) : data.items.length === 0 ? (
+        <p className="py-6 text-center text-sm text-slate-500">
+          {windowHint}沒有{kind === 'escalated' ? '惡化' : '改善'}的項目。
         </p>
       ) : (
-        <ul className="flex-1 space-y-1.5 overflow-y-auto pr-1">
-          {items.map((event, idx) => {
-            const arrow = ARROW[event.transition]
-            return (
-              <li key={`${event.repairSerial}-${event.eventType}-${idx}`}>
-                <button
-                  type="button"
-                  onClick={() => onSelect(event.kpovNo, event.equipmentCode)}
-                  className="w-full rounded-md border border-slate-200 p-2 text-left transition hover:border-slate-400 hover:bg-slate-50"
+        <div className="flex-1 overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-700 text-xs text-white">
+              <tr>
+                <th className="px-2 py-2 font-medium">站別</th>
+                <th className="px-2 py-2 font-medium">KPOV</th>
+                <th className="px-2 py-2 font-medium">Level 變化</th>
+                <th className="px-2 py-2 font-medium">改善措施</th>
+                <th className="px-2 py-2 font-medium">改善時間</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((item, idx) => (
+                <tr
+                  key={`${item.repairSerial}-${item.kpovNo}-${item.effectiveAt}-${idx}`}
+                  onClick={() => onSelect(item.kpovNo, item.equipmentCode)}
+                  className="cursor-pointer border-b border-slate-100 align-top hover:bg-slate-50"
+                  title="點擊查看此 KPOV 的等級歷程"
                 >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="font-medium text-slate-800">{event.kpovName ?? event.kpovNo}</span>
-                    <span className="text-xs text-slate-400">{event.station}</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-600">
-                    <LevelChip level={event.levelBefore} />
-                    <span className={`font-bold ${arrow.className}`}>{arrow.symbol}</span>
-                    <LevelChip level={event.levelAfter} />
-                    {event.planned && (
-                      <span className="ml-auto rounded px-1 text-[10px] font-medium text-emerald-700 border border-dashed border-emerald-400">
+                  <td className="px-2 py-2 text-slate-800">{item.station}</td>
+                  <td className="px-2 py-2">
+                    <span className="block text-slate-800">{item.kpovName}</span>
+                    <span className="font-mono text-xs text-slate-400">{item.kpovNo}</span>
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2">
+                    <span className="inline-flex items-center gap-1">
+                      <LevelChip level={item.levelBefore} />
+                      <span
+                        className={`font-bold ${item.transition === 'ESCALATED' ? 'text-red-600' : 'text-emerald-600'}`}
+                      >
+                        {item.transition === 'ESCALATED' ? '↑' : '↓'}
+                      </span>
+                      <LevelChip level={item.levelAfter} />
+                    </span>
+                    <span className="mt-0.5 block text-xs tabular-nums text-slate-400">
+                      {item.effectiveAt.slice(0, 10)}
+                    </span>
+                  </td>
+                  <td className="px-2 py-2 text-xs text-slate-700">{item.improvement || '—'}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-xs tabular-nums text-slate-600">
+                    {item.improvedAt ? item.improvedAt.slice(0, 10) : '—'}
+                    {item.improvePlanned && (
+                      <span className="mt-0.5 block w-fit rounded border border-dashed border-emerald-400 px-1 text-[10px] text-emerald-700">
                         預計改善
                       </span>
                     )}
-                    <span className={`${event.planned ? '' : 'ml-auto '}tabular-nums text-slate-400`}>
-                      {event.effectiveAt.slice(0, 10)}
-                    </span>
-                  </div>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data && data.total > 0 && (
+        <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+          <button
+            type="button"
+            disabled={data.page <= 1}
+            onClick={() => onPageChange(data.page - 1)}
+            className="rounded border border-slate-300 px-2.5 py-1 hover:bg-slate-50 disabled:opacity-40"
+          >
+            上一頁
+          </button>
+          <span className="tabular-nums">
+            第 {data.page} / {data.pages} 頁・共 {data.total} 筆
+          </span>
+          <button
+            type="button"
+            disabled={data.page >= data.pages}
+            onClick={() => onPageChange(data.page + 1)}
+            className="rounded border border-slate-300 px-2.5 py-1 hover:bg-slate-50 disabled:opacity-40"
+          >
+            下一頁
+          </button>
+        </div>
       )}
     </div>
   )

@@ -409,6 +409,109 @@ def list_events(
     }
 
 
+CHANGE_WINDOWS = {"day": 1, "week": 7, "month": 30, "year": 365}
+CHANGE_KINDS_UI = {"escalated": "ESCALATED", "improved": "IMPROVED"}
+
+
+@router.get("/level-changes")
+def list_level_changes(
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    kind: str = Query("escalated", pattern="^(escalated|improved)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """等級異動總覽：近 1／7／30／365 天內發生的惡化或改善，後端分頁。
+
+    惡化以不良發生（測試）時間落在區間內為準；改善以改善時間落在區間內為準。
+    尚未到的預計改善不算「已改善」。兩個卡片的數字（escalated / improved）同樣依區間計算。
+    """
+    batch = _batch_or_404(session)
+    states = build_states(session, batch.id)
+    scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
+    allowed = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in scoped}
+
+    now = dt.datetime.now(dt.timezone.utc)
+    since = now - dt.timedelta(days=CHANGE_WINDOWS[window])
+
+    def utc(value: dt.datetime) -> dt.datetime:
+        return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+
+    events = session.scalars(
+        select(FactLevelEvent)
+        .where(
+            FactLevelEvent.batch_id == batch.id,
+            FactLevelEvent.transition.in_(tuple(CHANGE_KINDS_UI.values())),
+        )
+        .order_by(FactLevelEvent.effective_at.desc(), FactLevelEvent.id.desc())
+    ).all()
+    in_window = [
+        e
+        for e in events
+        if (e.kpov_no, e.equipment_code) in allowed and since <= utc(e.effective_at) <= now
+    ]
+    counts = {
+        key: sum(1 for e in in_window if e.transition == transition) for key, transition in CHANGE_KINDS_UI.items()
+    }
+    selected = [e for e in in_window if e.transition == CHANGE_KINDS_UI[kind]]
+
+    total = len(selected)
+    pages = max(1, -(-total // page_size))
+    page = min(page, pages)
+    page_items = selected[(page - 1) * page_size : page * page_size]
+
+    repair_ids = {e.repair_id for e in page_items if e.repair_id}
+    repairs = (
+        {r.id: r for r in session.scalars(select(FactRepair).where(FactRepair.id.in_(repair_ids)))}
+        if repair_ids
+        else {}
+    )
+
+    items = []
+    for e in page_items:
+        kpov = allowed[(e.kpov_no, e.equipment_code)]
+        repair = repairs.get(e.repair_id) if e.repair_id else None
+        # 惡化列顯示對應維修單的改善措施與（預計）改善時間；改善列的改善時間就是事件生效時間
+        if e.event_type == "IMPROVE":
+            improve_at = utc(e.effective_at)
+            improvement = e.improvement or (repair.improvement if repair else None)
+        else:
+            improve_at = utc(repair.improvement_effective_at) if repair and repair.improvement_effective_at else None
+            improvement = repair.improvement if repair else None
+        items.append(
+            {
+                "kpovNo": e.kpov_no,
+                "kpovName": kpov.kpov_name,
+                "station": kpov.station,
+                "equipmentCode": e.equipment_code,
+                "effectiveAt": utc(e.effective_at).isoformat(),
+                "levelBefore": e.level_before,
+                "levelAfter": e.level_after,
+                "transition": e.transition,
+                "improvement": improvement,
+                "improvedAt": improve_at.isoformat() if improve_at else None,
+                "improvePlanned": bool(improve_at and improve_at > now),
+                "repairSerial": e.repair_serial,
+            }
+        )
+
+    return {
+        "window": window,
+        "since": since.isoformat(),
+        "kind": kind,
+        "counts": counts,
+        "page": page,
+        "pageSize": page_size,
+        "total": total,
+        "pages": pages,
+        "items": items,
+    }
+
+
 @router.post("/import")
 def do_import(file: UploadFile = File(...), session: Session = Depends(get_session)):
     # 刻意用 def 而非 async def：內部的檔案寫入、openpyxl 解析與 DB 寫入全是同步且

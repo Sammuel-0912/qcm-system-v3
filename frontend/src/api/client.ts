@@ -107,6 +107,38 @@ export type EventsResponse = {
   items: EventItem[]
 }
 
+export type ChangeWindow = 'day' | 'week' | 'month' | 'year'
+export type ChangeKind = 'escalated' | 'improved'
+
+/** 等級異動總覽：區間內的一筆惡化或改善 */
+export type LevelChangeItem = {
+  kpovNo: string
+  kpovName: string
+  station: string
+  equipmentCode: string
+  effectiveAt: string
+  levelBefore: number | null
+  levelAfter: number
+  transition: 'ESCALATED' | 'IMPROVED'
+  improvement: string | null
+  improvedAt: string | null
+  /** 改善時間在未來（預計改善） */
+  improvePlanned: boolean
+  repairSerial: string | null
+}
+
+export type LevelChangesResponse = {
+  window: ChangeWindow
+  since: string
+  kind: ChangeKind
+  counts: Record<ChangeKind, number>
+  page: number
+  pageSize: number
+  total: number
+  pages: number
+  items: LevelChangeItem[]
+}
+
 export type RepairDetail = {
   serialNo: string | null
   productDefectDesc: string | null
@@ -240,6 +272,8 @@ export const api = {
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
   events: (p: Scope & { levelAfter?: string }) => get<EventsResponse>('/events', p),
+  levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
+    get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>
     get<{ stations: string[]; items: CheckMonitorRow[]; shift: CheckShift }>('/check-items', { station }),
   /** 拍照點檢：照片上傳成功即記一次點檢 */
