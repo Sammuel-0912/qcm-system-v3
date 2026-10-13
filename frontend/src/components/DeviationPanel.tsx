@@ -44,7 +44,7 @@ export function DeviationPanel({
   const cards: { value: ChangeKind; label: string; tone: string; active: string }[] = [
     {
       value: 'escalated',
-      label: '惡化',
+      label: '高風險',
       tone: 'border-red-200 bg-red-50 text-red-700',
       active: 'ring-2 ring-red-500',
     },
