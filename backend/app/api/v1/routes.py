@@ -33,10 +33,13 @@ from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
+    CHANGE_WINDOWS,
     active_batch,
     apply_filters,
     quadrant_payload,
+    states_in_window,
     trend_payload,
+    window_bounds,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -117,11 +120,13 @@ def get_quadrant(
     line: str | None = None,
     attribute: str | None = None,
     target: str | None = None,
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
+    """象限圖。給 window 時只計入期間內有維修或客訴的 KPOV（含全廠比較基準）。"""
     _check_view(view)
     batch = _batch_or_404(session)
-    states = build_states(session, batch.id)
+    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
     payload = quadrant_payload(session, batch.id, states, station, line, view, attribute, target)
     payload["batch"] = _batch_info(batch)
     return payload
@@ -152,11 +157,13 @@ def list_kpov(
     deviated_only: bool = Query(False, alias="deviatedOnly"),
     page: int = 1,
     page_size: int = Query(100, alias="pageSize", le=500),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     _check_view(view)
     batch = _batch_or_404(session)
-    states = build_states(session, batch.id)
+    # 與象限圖同一個範圍：給 window 時只列期間內有異動的 KPOV，點象限看到的數字才對得上
+    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
 
     if level is not None:
@@ -413,7 +420,6 @@ def list_events(
     }
 
 
-CHANGE_WINDOWS = {"day": 1, "week": 7, "month": 30, "year": 365}
 CHANGE_KINDS_UI = {"escalated": "ESCALATED", "improved": "IMPROVED"}
 
 
@@ -656,6 +662,7 @@ def get_complaint_summary(
     target: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     """首頁：Level 3–0 客訴筆數（改善前／改善後）與客訴問題追蹤表（後端分頁）。
@@ -664,7 +671,9 @@ def get_complaint_summary(
     """
     batch = _batch_or_404(session)
     states, scoped, filtered = _scope(session, batch.id, station, line, attribute, target)
-    counts, rows = complaint_summary(session, batch.id, states, scoped if filtered else None)
+    counts, rows = complaint_summary(
+        session, batch.id, states, scoped if filtered else None, window_bounds(window)
+    )
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
 
 
@@ -676,12 +685,13 @@ def get_process_summary(
     target: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     """首頁：製程問題追蹤（修護報表）— Level 3–0 維修筆數與追蹤表（後端分頁）。"""
     batch = _batch_or_404(session)
     _, scoped, _ = _scope(session, batch.id, station, line, attribute, target)
-    counts, rows = process_summary(session, batch.id, scoped)
+    counts, rows = process_summary(session, batch.id, scoped, window_bounds(window))
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
 
 

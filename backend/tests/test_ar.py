@@ -543,3 +543,48 @@ def test_station_risk_counts(client):
     day = client.get("/api/v1/station-risk", params={"window": "day"}).json()
     assert all(v["repairs"] == 0 and v["complaints"] == 0 for v in day["stations"].values())
     assert client.get("/api/v1/station-risk", params={"window": "decade"}).status_code == 422
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_window_filters_quadrant_and_tracking(client):
+    """期間篩選連動：象限圖只算期間內有維修或客訴的 KPOV；客訴、製程追蹤依日期篩選。"""
+    import datetime as dt
+
+    _import_v3(client)
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def at(value):
+        parsed = dt.datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+
+    full = client.get("/api/v1/quadrant").json()["scope"]
+    year = client.get("/api/v1/quadrant", params={"window": "year"}).json()["scope"]
+    day = client.get("/api/v1/quadrant", params={"window": "day"}).json()["scope"]
+    assert full["total"] == 331
+    assert 0 < year["total"] < full["total"]
+    assert day["total"] == 0
+
+    # 象限圖的 KPOV 範圍＝期間內有維修（測試時間）或已對應客訴（客訴日期）的 KPOV
+    since = now - dt.timedelta(days=365)
+    repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()["items"]
+    complaints = client.get("/api/v1/complaints", params={"pageSize": 50}).json()["items"]
+    keys = {(r["kpovNo"], r["equipmentCode"]) for r in repairs if r["testedAt"] and since <= at(r["testedAt"])}
+    keys |= {
+        (c["kpovNo"], c["equipmentCode"])
+        for c in complaints
+        if c["kpovNo"] and c["equipmentCode"] and c["complainedAt"] and since <= at(c["complainedAt"])
+    }
+    kpov_year = client.get("/api/v1/kpov", params={"window": "year", "pageSize": 500}).json()
+    assert {(i["kpovNo"], i["equipmentCode"]) for i in kpov_year["items"]} <= keys
+    assert kpov_year["total"] == year["total"]
+
+    # 客訴、製程追蹤依日期篩選
+    c_all = client.get("/api/v1/complaints/summary").json()
+    c_day = client.get("/api/v1/complaints/summary", params={"window": "day"}).json()
+    assert c_all["levelCounts"]["total"] == 8 and c_day["levelCounts"]["total"] == 0 and c_day["total"] == 0
+    p_all = client.get("/api/v1/process/summary").json()
+    p_month = client.get("/api/v1/process/summary", params={"window": "month", "pageSize": 50}).json()
+    month_since = now - dt.timedelta(days=30)
+    assert all(month_since <= at(r["occurredAt"]) for r in p_month["items"])
+    assert p_month["total"] < p_all["total"]
+    assert client.get("/api/v1/quadrant", params={"window": "decade"}).status_code == 422

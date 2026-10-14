@@ -35,7 +35,8 @@ import { TrendChart } from '../components/TrendChart'
 
 const ATTRIBUTE_LABELS: Record<string, string> = { CTP: 'CTP 自動站', OP: 'OP 人工站' }
 
-// 天／週／月／年＝近 1／7／30／365 天：影響等級異動總覽與站別風險地圖
+// 天／週／月／年＝近 1／7／30／365 天：影響象限圖（只算期間內有維修或客訴的 KPOV）、
+// 客訴／製程問題追蹤、等級異動總覽與站別風險地圖
 const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
   { value: 'day', label: '天', hint: '近 1 天' },
   { value: 'week', label: '週', hint: '近 7 天' },
@@ -111,7 +112,7 @@ export default function QualityPage() {
     try {
       const [f, q] = await Promise.all([
         api.filters(),
-        api.quadrant({ view: state.view, station, line, attribute }),
+        api.quadrant({ view: state.view, station, line, attribute, window: changeWindow }),
       ])
       setFilters(f)
       setQuadrant(q)
@@ -120,7 +121,7 @@ export default function QualityPage() {
     } finally {
       setLoading(false)
     }
-  }, [state.view, station, line, attribute])
+  }, [state.view, station, line, attribute, changeWindow])
 
   // 左半邊：客訴問題追蹤（客訴報表）與製程問題追蹤（修護報表），吃上方篩選器，各自後端分頁
   const [complaints, setComplaints] = useState<ComplaintSummary | null>(null)
@@ -130,22 +131,22 @@ export default function QualityPage() {
 
   useEffect(() => {
     api
-      .complaintSummary({ station, line, attribute, page: complaintPage })
+      .complaintSummary({ station, line, attribute, page: complaintPage, window: changeWindow })
       .then(setComplaints)
       .catch(() => setComplaints(null))
-  }, [station, line, attribute, complaintPage, reloadKey])
+  }, [station, line, attribute, complaintPage, changeWindow, reloadKey])
 
   useEffect(() => {
     api
-      .processSummary({ station, line, attribute, page: processPage })
+      .processSummary({ station, line, attribute, page: processPage, window: changeWindow })
       .then(setProcessRows)
       .catch(() => setProcessRows(null))
-  }, [station, line, attribute, processPage, reloadKey])
+  }, [station, line, attribute, processPage, changeWindow, reloadKey])
 
   useEffect(() => {
     setComplaintPage(1)
     setProcessPage(1)
-  }, [station, line, attribute])
+  }, [station, line, attribute, changeWindow])
 
   const loadChanges = useCallback(async () => {
     try {
@@ -213,10 +214,11 @@ export default function QualityPage() {
         ...scope,
         level: String(selectedLevel),
         deviatedOnly: state.deviatedOnly ? '1' : undefined,
+        window: changeWindow,
       })
       .then(setKpovList)
       .catch(() => setKpovList(null))
-  }, [selectedLevel, state.view, state.deviatedOnly, state.target, station, line, attribute])
+  }, [selectedLevel, state.view, state.deviatedOnly, state.target, station, line, attribute, changeWindow])
 
   const worstLevels = useMemo(() => {
     const map: Record<string, number | null> = {}
@@ -326,7 +328,7 @@ export default function QualityPage() {
                     type="button"
                     role="tab"
                     aria-selected={changeWindow === w.value}
-                    title={`${w.hint}（等級異動總覽、站別風險地圖）`}
+                    title={`${w.hint}：象限圖、客訴／製程問題追蹤、等級異動總覽、站別風險地圖`}
                     onClick={() => setState((s) => ({ ...s, window: w.value }))}
                     className={`rounded px-3 py-1.5 text-sm font-medium transition ${
                       changeWindow === w.value ? 'bg-[#0086DB] text-white' : 'text-slate-600 hover:bg-slate-100'
@@ -373,7 +375,13 @@ export default function QualityPage() {
                   onSelect={setSelectedLevel}
                 />
               )}
-              {quadrant && <LevelCountBar counts={quadrant.scope} onSelect={setSelectedLevel} />}
+              {quadrant && (
+                <LevelCountBar
+                  counts={quadrant.scope}
+                  onSelect={setSelectedLevel}
+                  caption={`${WINDOWS.find((w) => w.value === changeWindow)?.hint}有維修或客訴的 KPOV`}
+                />
+              )}
 
               <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
                 <LevelTallyBar

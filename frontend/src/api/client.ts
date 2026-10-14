@@ -358,17 +358,17 @@ type Scope = { station?: string; line?: string; attribute?: string; target?: str
 
 export const api = {
   filters: () => get<FiltersResponse>('/filters'),
-  quadrant: (p: Scope & { view: string }) => get<QuadrantResponse>('/quadrant', p),
+  quadrant: (p: Scope & { view: string; window?: ChangeWindow }) => get<QuadrantResponse>('/quadrant', p),
   checkMonitor: (p: Scope) => get<CheckMonitorResponse>('/check-monitor', p),
   trend: (p: Scope) => get<TrendResponse>('/trend', p),
-  kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string }) =>
+  kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string; window?: ChangeWindow }) =>
     get<{ total: number; items: KpovItem[] }>('/kpov', p),
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
   events: (p: Scope & { levelAfter?: string }) => get<EventsResponse>('/events', p),
-  complaintSummary: (p: Scope & { page: number }) =>
+  complaintSummary: (p: Scope & { page: number; window?: ChangeWindow }) =>
     get<ComplaintSummary>('/complaints/summary', { ...p, page: String(p.page) }),
-  processSummary: (p: Scope & { page: number }) =>
+  processSummary: (p: Scope & { page: number; window?: ChangeWindow }) =>
     get<ProcessSummary>('/process/summary', { ...p, page: String(p.page) }),
   complaints: (p: { q?: string; page: number }) =>
     get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),

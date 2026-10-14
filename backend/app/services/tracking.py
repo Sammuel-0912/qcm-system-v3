@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..models import FactComplaint, FactRepair
 from .lifecycle import KpovState
 from .measure_rows import complaint_row, events_by_repair, measures_for, repair_row, utc
+from .query import in_bounds
 
 
 def paginate(rows: list[dict], page: int, page_size: int) -> dict:
@@ -39,10 +40,11 @@ def complaint_summary(
     batch_id: int,
     states: list[KpovState],
     scoped: list[KpovState] | None,
+    bounds: tuple[dt.datetime, dt.datetime] | None = None,
 ) -> tuple[dict, list[dict]]:
     """回傳（各 Level 客訴筆數, 追蹤列）。Level 筆數依改善後等級（目前狀態）統計。
 
-    scoped 為 None 表示未篩選（含未對應 KPOV 的客訴）。
+    scoped 為 None 表示未篩選（含未對應 KPOV 的客訴）；bounds 為期間，依客訴日期篩選。
     """
     by_key = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in states}
     allowed = None if scoped is None else {(s.kpov.kpov_no, s.kpov.equipment_code) for s in scoped}
@@ -52,6 +54,7 @@ def complaint_summary(
     ).all()
     if allowed is not None:
         complaints = [c for c in complaints if (c.kpov_no, c.equipment_code) in allowed]
+    complaints = [c for c in complaints if in_bounds(c.complained_at, bounds)]
 
     counts = {**_empty_level_counts(), "total": len(complaints)}
     groups: dict[tuple, list[FactComplaint]] = {}
@@ -78,6 +81,7 @@ def process_summary(
     session: Session,
     batch_id: int,
     scoped: list[KpovState],
+    bounds: tuple[dt.datetime, dt.datetime] | None = None,
 ) -> tuple[dict, list[dict]]:
     """修護報表每筆維修一列（只列對得到範圍內 KPOV 者），依測試時間新到舊。
     Level 筆數依該 KPOV 現況 Level 統計維修筆數。"""
@@ -85,7 +89,7 @@ def process_summary(
     repairs = [
         r
         for r in session.scalars(select(FactRepair).where(FactRepair.batch_id == batch_id))
-        if (r.kpov_no, r.equipment_code) in by_key
+        if (r.kpov_no, r.equipment_code) in by_key and in_bounds(r.tested_at, bounds)
     ]
     epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
     repairs.sort(key=lambda r: utc(r.tested_at) or epoch, reverse=True)

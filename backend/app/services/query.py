@@ -6,8 +6,58 @@ import datetime as dt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import DimEquipment, ImportBatch
+from ..models import DimEquipment, FactComplaint, FactRepair, ImportBatch
 from .lifecycle import KpovState, build_states, summarize
+
+
+# 期間篩選：天／週／月／年 = 近 1／7／30／365 天
+CHANGE_WINDOWS = {"day": 1, "week": 7, "month": 30, "year": 365}
+
+
+def window_bounds(window: str | None) -> tuple[dt.datetime, dt.datetime] | None:
+    """期間 -> (起, 迄)，UTC。window 為 None 表示不篩期間。"""
+    if window is None:
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    return now - dt.timedelta(days=CHANGE_WINDOWS[window]), now
+
+
+def in_bounds(value: dt.datetime | None, bounds: tuple[dt.datetime, dt.datetime] | None) -> bool:
+    if bounds is None:
+        return True
+    if value is None:
+        return False
+    value = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+    return bounds[0] <= value <= bounds[1]
+
+
+def active_kpov_keys(session: Session, batch_id: int, bounds: tuple[dt.datetime, dt.datetime]) -> set[tuple]:
+    """期間內有維修（依測試時間）或客訴（依客訴日期，需已對應設備＋KPOV）的（KPOV 編號, 設備代碼）。"""
+    keys: set[tuple] = set()
+    for kpov_no, code, at in session.execute(
+        select(FactRepair.kpov_no, FactRepair.equipment_code, FactRepair.tested_at).where(
+            FactRepair.batch_id == batch_id
+        )
+    ):
+        if in_bounds(at, bounds):
+            keys.add((kpov_no, code))
+    for kpov_no, code, at in session.execute(
+        select(FactComplaint.kpov_no, FactComplaint.equipment_code, FactComplaint.complained_at).where(
+            FactComplaint.batch_id == batch_id
+        )
+    ):
+        if kpov_no and code and in_bounds(at, bounds):
+            keys.add((kpov_no, code))
+    return keys
+
+
+def states_in_window(session: Session, batch_id: int, states: list[KpovState], window: str | None) -> list[KpovState]:
+    """象限圖與 Level 明細：只留期間內有異動（維修或客訴）的 KPOV；window 為 None 時不篩。"""
+    bounds = window_bounds(window)
+    if bounds is None:
+        return states
+    keys = active_kpov_keys(session, batch_id, bounds)
+    return [s for s in states if (s.kpov.kpov_no, s.kpov.equipment_code) in keys]
 
 
 def active_batch(session: Session) -> ImportBatch | None:
