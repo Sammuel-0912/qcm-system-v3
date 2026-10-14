@@ -18,6 +18,7 @@ from ...importer.excel import ImportError_, import_workbook
 from ...models import (
     CheckPhotoInspection,
     DimEquipment,
+    EmergencyMeasure,
     FactChangeRecord,
     FactCheckItem,
     FactComplaint,
@@ -473,6 +474,14 @@ def list_level_changes(
         else {}
     )
 
+    # 高風險列附上使用者填的緊急措施分類（以維修序號＋KPOV＋設備定位，不隨匯入批次變動）
+    measures: dict[tuple, EmergencyMeasure] = {}
+    if kind == "escalated":
+        serials = {e.repair_serial for e in page_items if e.repair_serial}
+        if serials:
+            for m in session.scalars(select(EmergencyMeasure).where(EmergencyMeasure.repair_serial.in_(serials))):
+                measures[(m.repair_serial, m.kpov_no, m.equipment_code)] = m
+
     items = []
     for e in page_items:
         kpov = allowed[(e.kpov_no, e.equipment_code)]
@@ -500,6 +509,11 @@ def list_level_changes(
                 "repairSerial": e.repair_serial,
             }
         )
+        if kind == "escalated":
+            measure = measures.get((e.repair_serial, e.kpov_no, e.equipment_code))
+            items[-1]["measure"] = _measure_out(measure) if measure else None
+            # 客訴筆數：尚未定義對應規則，先固定 0（使用者指定）
+            items[-1]["complaintCount"] = 0
 
     return {
         "window": window,
@@ -512,6 +526,99 @@ def list_level_changes(
         "pages": pages,
         "items": items,
     }
+
+
+# --------------------------------------------------------------------------- 緊急措施分類
+
+
+class EmergencyMeasureIn(BaseModel):
+    repair_serial: str = Field(alias="repairSerial", min_length=1)
+    kpov_no: str = Field(alias="kpovNo", min_length=1)
+    equipment_code: str = Field(alias="equipmentCode", min_length=1)
+    solution_type: str = Field(alias="solutionType", pattern="^(technical|management)$")
+    tech_target: str | None = Field(None, alias="techTarget", pattern="^(KPOV|KPIV)$")
+    design_elimination: bool = Field(False, alias="designElimination")
+    equipment_interception: bool = Field(False, alias="equipmentInterception")
+    foolproof: bool = False
+    smart_monitoring: bool = Field(False, alias="smartMonitoring")
+    management_note: str | None = Field(None, alias="managementNote")
+
+
+def _measure_out(m: EmergencyMeasure) -> dict:
+    return {
+        "solutionType": m.solution_type,
+        "techTarget": m.tech_target,
+        "designElimination": m.design_elimination,
+        "equipmentInterception": m.equipment_interception,
+        "foolproof": m.foolproof,
+        "smartMonitoring": m.smart_monitoring,
+        "managementNote": m.management_note,
+        "updatedAt": m.updated_at.isoformat() if m.updated_at else None,
+    }
+
+
+@router.put("/emergency-measures")
+def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(get_session)):
+    """儲存一筆高風險異動的緊急措施分類（upsert）。
+
+    技術解／管理解二選一；技術解再分 KPOV 或 KPIV，只保留該分類的兩個勾選項，
+    切換分類時另一組一律清除，避免資料庫留下互相矛盾的組合。
+    """
+    batch = _batch_or_404(session)
+    exists = session.scalar(
+        select(FactRepair.id).where(
+            FactRepair.batch_id == batch.id,
+            FactRepair.serial_no == data.repair_serial,
+            FactRepair.kpov_no == data.kpov_no,
+            FactRepair.equipment_code == data.equipment_code,
+        )
+    )
+    if exists is None:
+        raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
+
+    fields = {
+        "solution_type": data.solution_type,
+        "tech_target": None,
+        "design_elimination": False,
+        "equipment_interception": False,
+        "foolproof": False,
+        "smart_monitoring": False,
+        "management_note": None,
+    }
+    if data.solution_type == "technical":
+        if not data.tech_target:
+            raise HTTPException(status_code=422, detail="技術解需選擇 KPOV 或 KPIV")
+        fields["tech_target"] = data.tech_target
+        if data.tech_target == "KPOV":
+            fields["design_elimination"] = data.design_elimination
+            fields["equipment_interception"] = data.equipment_interception
+        else:
+            fields["foolproof"] = data.foolproof
+            fields["smart_monitoring"] = data.smart_monitoring
+    else:
+        note = (data.management_note or "").strip()
+        if not note:
+            raise HTTPException(status_code=422, detail="管理解請填寫內容")
+        fields["management_note"] = note
+
+    measure = session.scalars(
+        select(EmergencyMeasure).where(
+            EmergencyMeasure.repair_serial == data.repair_serial,
+            EmergencyMeasure.kpov_no == data.kpov_no,
+            EmergencyMeasure.equipment_code == data.equipment_code,
+        )
+    ).first()
+    if measure is None:
+        measure = EmergencyMeasure(
+            repair_serial=data.repair_serial, kpov_no=data.kpov_no, equipment_code=data.equipment_code, **fields
+        )
+        session.add(measure)
+    else:
+        for key, value in fields.items():
+            setattr(measure, key, value)
+        measure.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.commit()
+    return _measure_out(measure)
 
 
 # --------------------------------------------------------------------------- 客訴／製程問題追蹤

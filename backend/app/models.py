@@ -444,3 +444,44 @@ class CheckPhotoInspection(Base):
     inspected_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
     )
+
+
+SOLUTION_TYPES = ("technical", "management")
+TECH_TARGETS = ("KPOV", "KPIV")
+
+
+class EmergencyMeasure(Base):
+    """高風險異動的緊急措施分類（使用者在等級異動總覽填寫）。
+
+    不掛 batch_id：這是使用者輸入的資料，重新匯入 Excel 不可洗掉。
+    以（維修序號, KPOV 編號, 設備代碼）自然鍵對到修護報表的那一筆維修。
+    技術解／管理解二選一；技術解再分 KPOV（設計消除、設備攔截）或 KPIV（防呆防錯、智能監控）。
+    """
+
+    __tablename__ = "emergency_measure"
+    __table_args__ = (
+        UniqueConstraint("repair_serial", "kpov_no", "equipment_code", name="uq_emergency_measure_target"),
+        CheckConstraint(f"solution_type IN {SOLUTION_TYPES}", name="ck_emergency_solution_type"),
+        CheckConstraint(
+            f"tech_target IS NULL OR tech_target IN {TECH_TARGETS}", name="ck_emergency_tech_target"
+        ),
+    )
+
+    id: Mapped[int] = _pk()
+    repair_serial: Mapped[str] = mapped_column(Text, nullable=False)
+    kpov_no: Mapped[str] = mapped_column(Text, nullable=False)
+    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    solution_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    tech_target: Mapped[str | None] = mapped_column(String(8))
+    design_elimination: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    equipment_interception: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    foolproof: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    smart_monitoring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    management_note: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: dt.datetime.now(dt.timezone.utc),
+        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+    )
+

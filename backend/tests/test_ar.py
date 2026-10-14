@@ -437,3 +437,57 @@ def test_process_summary_and_repairs_list(client):
     assert summary["levelCounts"]["total"] == 25
     full = client.get("/api/v1/process/summary", params={"pageSize": 50}).json()
     assert sum(r["count"] for r in full["items"]) == 25
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_emergency_measure_classification(client):
+    _import_v3(client)
+    escalated = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
+    row = next(i for i in escalated if i["repairSerial"])
+    assert row["complaintCount"] == 0 and row["measure"] is None
+    improved = client.get("/api/v1/level-changes", params={"window": "year", "kind": "improved"}).json()["items"]
+    assert all("measure" not in i and "complaintCount" not in i for i in improved)
+
+    key = {"repairSerial": row["repairSerial"], "kpovNo": row["kpovNo"], "equipmentCode": row["equipmentCode"]}
+
+    def save(**body):
+        return client.put("/api/v1/emergency-measures", json={**key, **body})
+
+    def current():
+        items = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
+        return next(
+            i["measure"]
+            for i in items
+            if (i["repairSerial"], i["kpovNo"], i["equipmentCode"])
+            == (key["repairSerial"], key["kpovNo"], key["equipmentCode"])
+        )
+
+    assert save(solutionType="technical", techTarget="KPOV", designElimination=True).status_code == 200
+    m = current()
+    assert (m["solutionType"], m["techTarget"], m["designElimination"], m["equipmentInterception"]) == (
+        "technical", "KPOV", True, False,
+    )
+
+    # 改成 KPIV：KPOV 的兩個框要被清掉
+    save(solutionType="technical", techTarget="KPIV", designElimination=True, smartMonitoring=True)
+    m = current()
+    assert m["techTarget"] == "KPIV" and m["smartMonitoring"] and not m["designElimination"]
+
+    # 改成管理解：技術欄位清空
+    assert save(solutionType="management", managementNote="  加強稽核頻率  ").status_code == 200
+    m = current()
+    assert m["solutionType"] == "management" and m["managementNote"] == "加強稽核頻率"
+    assert m["techTarget"] is None and not m["smartMonitoring"]
+
+    assert save(solutionType="management", managementNote="   ").status_code == 422
+    assert save(solutionType="technical").status_code == 422
+    assert save(solutionType="other").status_code == 422
+    missing = client.put(
+        "/api/v1/emergency-measures",
+        json={**key, "repairSerial": "NOPE", "solutionType": "management", "managementNote": "x"},
+    )
+    assert missing.status_code == 404
+
+    # 不掛批次：重新匯入後分類仍在
+    _import_v3(client)
+    assert current()["managementNote"] == "加強稽核頻率"

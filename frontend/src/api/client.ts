@@ -110,6 +110,18 @@ export type EventsResponse = {
 export type ChangeWindow = 'day' | 'week' | 'month' | 'year'
 export type ChangeKind = 'escalated' | 'improved'
 
+/** 高風險異動的緊急措施分類：技術解（KPOV／KPIV）或管理解，二選一 */
+export type EmergencyMeasure = {
+  solutionType: 'technical' | 'management'
+  techTarget: 'KPOV' | 'KPIV' | null
+  designElimination: boolean
+  equipmentInterception: boolean
+  foolproof: boolean
+  smartMonitoring: boolean
+  managementNote: string | null
+  updatedAt?: string | null
+}
+
 /** 等級異動總覽：區間內的一筆惡化或改善 */
 export type LevelChangeItem = {
   kpovNo: string
@@ -125,6 +137,10 @@ export type LevelChangeItem = {
   /** 改善時間在未來（預計改善） */
   improvePlanned: boolean
   repairSerial: string | null
+  /** 僅高風險列：使用者填的緊急措施分類（未分類為 null） */
+  measure?: EmergencyMeasure | null
+  /** 僅高風險列：客訴筆數（目前固定 0） */
+  complaintCount?: number
 }
 
 export type LevelChangesResponse = {
@@ -362,6 +378,19 @@ export const api = {
   complaints: (p: { q?: string; page: number }) =>
     get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
   repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
+  async saveEmergencyMeasure(
+    key: { repairSerial: string; kpovNo: string; equipmentCode: string },
+    measure: Omit<EmergencyMeasure, 'updatedAt'>,
+  ) {
+    const res = await fetch(`${BASE}/emergency-measures`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...key, ...measure }),
+    })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '儲存失敗')
+    return body as EmergencyMeasure
+  },
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>
