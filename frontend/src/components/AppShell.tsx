@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
+import { AR_MARKER_ENABLED } from '../features'
 import { usePresence } from '../hooks/usePresence'
 
 type NavItem = { to: string; label: string; hint?: string }
@@ -12,17 +13,17 @@ const NAV: NavGroup[] = [
     title: '品質管控',
     items: [
       { to: '/quality', label: '整線品控力總覽', hint: 'KPOV 等級分佈與異動' },
-      { to: '/complaints', label: '客訴清單', hint: '客訴報表（8D）' },
-      { to: '/process', label: '製程清單', hint: '修護報表' },
+      { to: '/complaints', label: '客訴回饋清單', hint: '客訴報表（8D）' },
+      { to: '/process', label: '製程異常清單', hint: '修護報表' },
     ],
   },
   {
     title: 'AR 點檢',
     items: [
       { to: '/ar/dashboard', label: '點檢儀表板', hint: '良率統計與報表' },
-      { to: '/ar/devices', label: '設備管理', hint: 'Marker 與作業指引' },
+      ...(AR_MARKER_ENABLED ? [{ to: '/ar/devices', label: '設備管理', hint: 'Marker 與作業指引' }] : []),
       { to: '/ar/photo', label: '拍照點檢', hint: '免掃碼，手機拍照上傳' },
-      { to: '/ar/inspect', label: 'AR 掃描點檢', hint: '需相機權限' },
+      ...(AR_MARKER_ENABLED ? [{ to: '/ar/inspect', label: 'AR 掃描點檢', hint: '需相機權限' }] : []),
     ],
   },
 ]
