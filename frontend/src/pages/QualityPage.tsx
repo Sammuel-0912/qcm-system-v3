@@ -354,6 +354,7 @@ export default function QualityPage() {
                   onPageChange={setComplaintPage}
                   onSelect={openHistory}
                   emptyText="此範圍沒有客訴"
+                  storageKey="qcm.tracking.complaints"
                 />
               </div>
 
@@ -370,6 +371,7 @@ export default function QualityPage() {
                   onPageChange={setProcessPage}
                   onSelect={openHistory}
                   emptyText="此範圍沒有維修紀錄"
+                  storageKey="qcm.tracking.process"
                 />
               </div>
             </div>
