@@ -1,5 +1,5 @@
 import type { ChangeKind, ChangeWindow, LevelChangesResponse } from '../api/client'
-import { LEVEL_COLORS } from '../constants'
+import { LevelChip } from './LevelChip'
 
 type Props = {
   data: LevelChangesResponse | null
@@ -18,18 +18,6 @@ const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
   { value: 'month', label: '月', hint: '近 30 天' },
   { value: 'year', label: '年', hint: '近 365 天' },
 ]
-
-function LevelChip({ level }: { level: number | null }) {
-  if (level === null) return <span className="text-slate-400">—</span>
-  return (
-    <span
-      className="inline-flex h-5 items-center rounded px-1.5 text-xs font-semibold text-slate-800 ring-1 ring-black/10"
-      style={{ backgroundColor: LEVEL_COLORS[level] }}
-    >
-      L{level}
-    </span>
-  )
-}
 
 export function DeviationPanel({
   data,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
 import { usePresence } from '../hooks/usePresence'
@@ -10,7 +10,11 @@ type NavGroup = { title: string; items: NavItem[] }
 const NAV: NavGroup[] = [
   {
     title: '品質管控',
-    items: [{ to: '/quality', label: '品控力象限', hint: 'KPOV 等級分佈與異動' }],
+    items: [
+      { to: '/quality', label: '整線品控力總覽', hint: 'KPOV 等級分佈與異動' },
+      { to: '/complaints', label: '客訴清單', hint: '客訴報表（8D）' },
+      { to: '/process', label: '製程清單', hint: '修護報表' },
+    ],
   },
   {
     title: 'AR 點檢',
@@ -23,88 +27,45 @@ const NAV: NavGroup[] = [
   },
 ]
 
-function currentLabel(pathname: string): string {
-  for (const group of NAV) {
-    for (const item of group.items) {
-      if (pathname === item.to || pathname.startsWith(item.to + '/')) return item.label
-    }
-  }
-  return '選擇功能'
+function isActive(pathname: string, to: string) {
+  return pathname === to || pathname.startsWith(to + '/')
 }
 
-function NavMenu() {
-  const [open, setOpen] = useState(false)
+function SideNav() {
   const { pathname } = useLocation()
-  const ref = useRef<HTMLDivElement>(null)
-
-  // 路由變了就收起選單
-  useEffect(() => setOpen(false), [pathname])
-
-  useEffect(() => {
-    if (!open) return
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
   return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        className="flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-      >
-        {currentLabel(pathname)}
-        <span className="text-xs text-slate-400">▾</span>
-      </button>
-
-      {open && (
-        <div
-          role="menu"
-          className="absolute left-0 z-40 mt-1 w-64 rounded-md border border-slate-200 bg-white p-1 shadow-lg"
-        >
-          {NAV.map((group, gi) => (
-            <div key={group.title}>
-              {gi > 0 && <div className="my-1 border-t border-slate-100" />}
-              <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                {group.title}
-              </div>
-              {group.items.map((item) => {
-                const active = pathname === item.to || pathname.startsWith(item.to + '/')
-                return (
+    <nav aria-label="主要導覽" className="space-y-5 px-3 py-4">
+      {NAV.map((group) => (
+        <div key={group.title}>
+          <div className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            {group.title}
+          </div>
+          <ul className="space-y-0.5">
+            {group.items.map((item) => {
+              const active = isActive(pathname, item.to)
+              return (
+                <li key={item.to}>
                   <Link
-                    key={item.to}
                     to={item.to}
-                    role="menuitem"
-                    className={`block rounded px-2 py-1.5 transition ${
-                      active ? 'bg-slate-900 text-white' : 'text-slate-800 hover:bg-slate-100'
+                    aria-current={active ? 'page' : undefined}
+                    className={`block rounded-md px-2.5 py-2 transition ${
+                      active ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
                     }`}
                   >
-                    <span className="block text-sm">{item.label}</span>
+                    <span className="block text-sm font-medium">{item.label}</span>
                     {item.hint && (
                       <span className={`block text-xs ${active ? 'text-slate-300' : 'text-slate-400'}`}>
                         {item.hint}
                       </span>
                     )}
                   </Link>
-                )
-              })}
-            </div>
-          ))}
+                </li>
+              )
+            })}
+          </ul>
         </div>
-      )}
-    </div>
+      ))}
+    </nav>
   )
 }
 
@@ -116,31 +77,68 @@ type Props = {
 }
 
 /**
- * 一般頁面的外殼：頁首 + 導覽下拉 + 內容區。
+ * 一般頁面的外殼：左側導覽列 + 頁首 + 內容區。桌機導覽列固定，手機改為可收合的抽屜。
  *
  * AR 掃描頁刻意不使用這個外殼——它會把 A-Frame 的 scene 以 position:fixed
  * 蓋滿整個視窗，頁首會被遮住或反過來擋住相機畫面（見 ar-integration-spec.md §2）。
  */
 export function AppShell({ title, actions, children }: Props) {
   const online = usePresence()
+  const { pathname } = useLocation()
+  const [drawer, setDrawer] = useState(false)
+
+  // 換頁就收起手機抽屜
+  useEffect(() => setDrawer(false), [pathname])
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-4">
-          <h1 className="text-xl font-semibold">{title}</h1>
-          <NavMenu />
-          <div className="ml-auto flex items-center gap-4">
-            {online !== null && (
-              <span className="flex items-center gap-1.5 text-sm text-slate-500" title="目前開著本網站的分頁數">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                線上 {online} 人
-              </span>
-            )}
-            {actions && <div className="flex items-center gap-2">{actions}</div>}
-          </div>
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 overflow-y-auto border-r border-slate-200 bg-white lg:block">
+        <div className="border-b border-slate-100 px-5 py-4 text-sm font-semibold text-slate-800">WJ1 DCS 品控力平台</div>
+        <SideNav />
+      </aside>
+
+      {drawer && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <button
+            type="button"
+            aria-label="關閉選單"
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setDrawer(false)}
+          />
+          <aside className="absolute inset-y-0 left-0 w-64 overflow-y-auto bg-white shadow-xl">
+            <div className="border-b border-slate-100 px-5 py-4 text-sm font-semibold text-slate-800">
+              WJ1 DCS 品控力平台
+            </div>
+            <SideNav />
+          </aside>
         </div>
-      </header>
-      {children}
+      )}
+
+      <div className="lg:pl-56">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-4">
+            <button
+              type="button"
+              onClick={() => setDrawer(true)}
+              aria-label="開啟選單"
+              className="rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 lg:hidden"
+            >
+              ☰
+            </button>
+            <h1 className="text-xl font-semibold">{title}</h1>
+            <div className="ml-auto flex items-center gap-4">
+              {online !== null && (
+                <span className="flex items-center gap-1.5 text-sm text-slate-500" title="目前開著本網站的分頁數">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  線上 {online} 人
+                </span>
+              )}
+              {actions && <div className="flex items-center gap-2">{actions}</div>}
+            </div>
+          </div>
+        </header>
+        {children}
+      </div>
     </div>
   )
 }

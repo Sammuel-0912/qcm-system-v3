@@ -139,6 +139,89 @@ export type LevelChangesResponse = {
   items: LevelChangeItem[]
 }
 
+export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
+
+/** 客訴問題追蹤／製程問題追蹤的一列（兩表同格式） */
+export type TrackingRow = {
+  station: string | null
+  kpovNo: string | null
+  kpovName: string | null
+  equipmentCode: string | null
+  /** 是否對應到 KPOV 庫；客訴未填設備ID／KPOV 編號者為 false */
+  mapped: boolean
+  count: number
+  improvement: string | null
+  levelBefore: number | null
+  levelAfter: number | null
+  cutoverAt: string | null
+  cutoverPlanned: boolean
+  cutoverOverdue: boolean
+  tracking: number
+  lastAt: string | null
+}
+
+export type ComplaintSummary = Paged<TrackingRow> & {
+  levelCounts: { before: Record<string, number>; after: Record<string, number>; total: number }
+}
+
+export type ProcessSummary = Paged<TrackingRow> & {
+  levelCounts: { current: Record<string, number>; total: number }
+}
+
+export type Complaint = {
+  id: number
+  seq: number | null
+  reportNo: string | null
+  complainedAt: string | null
+  customer: string | null
+  category: string | null
+  item: string | null
+  processUnit: string | null
+  productKpov: string | null
+  levelBefore: number | null
+  levelAfter: number | null
+  owner: string | null
+  plannedAt: string | null
+  doneAt: string | null
+  plannedText: string | null
+  doneText: string | null
+  effectiveness: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  site: string | null
+  plant: string | null
+  causeOccur: string | null
+  causeEscape: string | null
+  countermeasure: string | null
+  verdict: string | null
+  before: {
+    bigYItem: string | null
+    bigYMethod: string | null
+    bigYScore: number | null
+    smallYMethod: string | null
+    smallYScore: number | null
+  }
+  after: { smallYMethod: string | null; smallYScore: number | null; bigYMethod: string | null; bigYScore: number | null }
+}
+
+export type RepairRow = {
+  id: number
+  testedAt: string | null
+  serialNo: string | null
+  productModel: string | null
+  line: string | null
+  station: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  kpovName: string | null
+  defectDesc: string | null
+  improvement: string | null
+  improvedAt: string | null
+  improvePlanned: boolean
+  levelBefore: number | null
+  levelAfter: number | null
+}
+
 export type RepairDetail = {
   serialNo: string | null
   productDefectDesc: string | null
@@ -272,6 +355,13 @@ export const api = {
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
   events: (p: Scope & { levelAfter?: string }) => get<EventsResponse>('/events', p),
+  complaintSummary: (p: Scope & { page: number }) =>
+    get<ComplaintSummary>('/complaints/summary', { ...p, page: String(p.page) }),
+  processSummary: (p: Scope & { page: number }) =>
+    get<ProcessSummary>('/process/summary', { ...p, page: String(p.page) }),
+  complaints: (p: { q?: string; page: number }) =>
+    get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
+  repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>

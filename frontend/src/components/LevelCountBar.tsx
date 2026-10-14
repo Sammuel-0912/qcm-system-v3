@@ -11,7 +11,7 @@ type Props = {
 export function LevelCountBar({ counts, onSelect }: Props) {
   const levels = [0, 1, 2, 3] as const
   return (
-    <div className="mt-4 border-t border-slate-100 pt-3">
+    <div className="mt-1">
       <div className="mb-2 flex items-baseline justify-between text-xs text-slate-400">
         <span>各 Level KPOV 數</span>
         <span>點選查看明細</span>

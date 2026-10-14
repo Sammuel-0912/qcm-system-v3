@@ -31,6 +31,7 @@ from ..models import (
     FactAlarm,
     FactChangeRecord,
     FactCheckItem,
+    FactComplaint,
     FactKpov,
     FactRepair,
     ImportBatch,
@@ -698,6 +699,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     # 6) PCN / ECN 變更紀錄、高風險項點檢
     _import_changes(session, workbook, batch, report, previous, lookup)
     _import_check_items(session, workbook, batch, report, previous, carry, lookup)
+    _import_complaints(session, workbook, batch, report, previous, carry)
 
     # 7) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
     header_text = " ".join(
@@ -919,3 +921,85 @@ def _import_check_items(session, workbook, batch, report, previous, carry, looku
         )
         count += 1
     report.row_counts["checkItems"] = count
+
+
+_DATE_IN_TEXT = re.compile(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})")
+_LEVEL_IN_TEXT = re.compile(r"Level\s*([0-3])", re.IGNORECASE)
+
+
+def _complaint_dates(value: Any) -> tuple[dt.datetime | None, bool]:
+    """客訴的預計／實際完成時間可能是日期、文字日期，或多項對策並列（「1.2026/11/3 2.2026/7/30」）。
+
+    回傳 (最晚的日期, 是否每一項都有日期)。任一項是 NA 表示尚未全部完成。
+    """
+    if value is None:
+        return None, False
+    if isinstance(value, (dt.datetime, dt.date)):
+        return _to_datetime(value), True
+    text = str(value)
+    dates = [
+        dt.datetime(int(y), int(m), int(d), tzinfo=dt.timezone.utc)
+        for y, m, d in _DATE_IN_TEXT.findall(text)
+    ]
+    if not dates:
+        return None, False
+    pending = bool(re.search(r"(?<![A-Za-z])N/?A(?![A-Za-z])", text, re.IGNORECASE))
+    return max(dates), not pending
+
+
+def _import_complaints(session, workbook, batch, report, previous, carry) -> None:
+    from openpyxl.utils import column_index_from_string
+
+    sheet = _provided_sheet(workbook, "complaint")
+    if sheet is None:
+        if previous is not None:
+            carry(FactComplaint, "客訴報表", "complaints")
+        else:
+            report.row_counts["complaints"] = 0
+        return
+
+    rows = list(sheet.iter_rows(values_only=True))
+    index = {letter: column_index_from_string(letter) - 1 for letter in M.COMPLAINT_COLUMNS}
+
+    # 驗證表頭：每個關鍵欄位的文字必須出現在前幾列的該欄
+    head = rows[: M.COMPLAINT_HEADER_ROWS]
+    wrong = []
+    for letter, label in M.COMPLAINT_HEADER_CHECKS.items():
+        col = column_index_from_string(letter) - 1
+        texts = [M.normalize(r[col]) if col < len(r) else "" for r in head]
+        if not any(label in t.replace(" ", "") for t in texts):
+            wrong.append(f"{letter} 欄應為「{label}」")
+    if wrong:
+        raise ImportError_(f"「{sheet.title}」欄位位置與預期不符：{'；'.join(wrong)}")
+
+    def text(row, field_letter):
+        idx = index[field_letter]
+        value = _to_text(row[idx]) if idx < len(row) else None
+        return None if value in ("#N/A", "N/A", "NA", "-") else value
+
+    count = 0
+    for row in rows[M.COMPLAINT_HEADER_ROWS - 2 :]:
+        seq = _to_int(row[0]) if row else None
+        if seq is None:
+            continue  # 表頭、範本空列、右側偵測字典列
+        data: dict[str, Any] = {}
+        for letter, field in M.COMPLAINT_COLUMNS.items():
+            data[field] = text(row, letter)
+        data["seq"] = seq
+        data["complained_at"] = _to_datetime(row[index["E"]]) or _complaint_dates(row[index["E"]])[0]
+        for field in ("big_y_score_before", "small_y_score_before", "small_y_score_after", "big_y_score_after"):
+            data[field] = _to_int(data[field])
+        for field in ("level_before", "level_after"):
+            match = _LEVEL_IN_TEXT.search(data[field] or "")
+            data[field] = int(match.group(1)) if match else None
+        data["planned_at"], _ = _complaint_dates(row[index["AH"]])
+        done_at, all_done = _complaint_dates(row[index["AI"]])
+        data["done_at"] = done_at if all_done else None
+        if isinstance(row[index["AH"]], (dt.datetime, dt.date)):
+            data["planned_text"] = _to_datetime(row[index["AH"]]).date().isoformat()
+        if isinstance(row[index["AI"]], (dt.datetime, dt.date)):
+            data["done_text"] = _to_datetime(row[index["AI"]]).date().isoformat()
+        session.add(FactComplaint(batch_id=batch.id, **data))
+        count += 1
+    report.row_counts["complaints"] = count
+
