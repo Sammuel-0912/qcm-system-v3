@@ -108,7 +108,7 @@ export function AppShell({ title, actions, children }: Props) {
           />
           <aside className="absolute inset-y-0 left-0 w-64 overflow-y-auto bg-white shadow-xl">
             <div className="border-b border-slate-100 px-5 py-4 text-sm font-semibold text-slate-800">
-              WJ1 DCS 品控力平台
+              WJ1 DCS 品控力風險智控平台
             </div>
             <SideNav />
           </aside>
