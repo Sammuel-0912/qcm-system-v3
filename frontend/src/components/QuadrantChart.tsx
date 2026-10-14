@@ -36,13 +36,13 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
 
   return (
     <svg
-      viewBox="0 0 700 550"
+      viewBox="0 0 700 480"
       className="w-full h-auto"
       style={{ fontFamily: "'PingFang TC','Microsoft JhengHei',sans-serif" }}
       role="img"
       aria-label="品控力象限圖"
     >
-      <rect x="0" y="0" width="700" height="550" fill="#ffffff" />
+      <rect x="0" y="0" width="700" height="480" fill="#ffffff" />
 
       {[2, 0, 3, 1].map((level) => {
         const rect = RECTS[level]

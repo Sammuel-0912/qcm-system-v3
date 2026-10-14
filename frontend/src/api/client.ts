@@ -110,6 +110,18 @@ export type EventsResponse = {
 export type ChangeWindow = 'day' | 'week' | 'month' | 'year'
 export type ChangeKind = 'escalated' | 'improved'
 
+/** 高風險異動的緊急措施分類：技術解（KPOV／KPIV）或管理解，二選一 */
+export type EmergencyMeasure = {
+  solutionType: 'technical' | 'management'
+  techTarget: 'KPOV' | 'KPIV' | null
+  designElimination: boolean
+  equipmentInterception: boolean
+  foolproof: boolean
+  smartMonitoring: boolean
+  managementNote: string | null
+  updatedAt?: string | null
+}
+
 /** 等級異動總覽：區間內的一筆惡化或改善 */
 export type LevelChangeItem = {
   kpovNo: string
@@ -125,6 +137,10 @@ export type LevelChangeItem = {
   /** 改善時間在未來（預計改善） */
   improvePlanned: boolean
   repairSerial: string | null
+  /** 僅高風險列：使用者填的緊急措施分類（未分類為 null） */
+  measure?: EmergencyMeasure | null
+  /** 僅高風險列：客訴筆數（目前固定 0） */
+  complaintCount?: number
 }
 
 export type LevelChangesResponse = {
@@ -137,6 +153,89 @@ export type LevelChangesResponse = {
   total: number
   pages: number
   items: LevelChangeItem[]
+}
+
+export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
+
+/** 客訴問題追蹤／製程問題追蹤的一列（兩表同格式） */
+export type TrackingRow = {
+  station: string | null
+  kpovNo: string | null
+  kpovName: string | null
+  equipmentCode: string | null
+  /** 是否對應到 KPOV 庫；客訴未填設備ID／KPOV 編號者為 false */
+  mapped: boolean
+  count: number
+  improvement: string | null
+  levelBefore: number | null
+  levelAfter: number | null
+  cutoverAt: string | null
+  cutoverPlanned: boolean
+  cutoverOverdue: boolean
+  tracking: number
+  lastAt: string | null
+}
+
+export type ComplaintSummary = Paged<TrackingRow> & {
+  levelCounts: { before: Record<string, number>; after: Record<string, number>; total: number }
+}
+
+export type ProcessSummary = Paged<TrackingRow> & {
+  levelCounts: { current: Record<string, number>; total: number }
+}
+
+export type Complaint = {
+  id: number
+  seq: number | null
+  reportNo: string | null
+  complainedAt: string | null
+  customer: string | null
+  category: string | null
+  item: string | null
+  processUnit: string | null
+  productKpov: string | null
+  levelBefore: number | null
+  levelAfter: number | null
+  owner: string | null
+  plannedAt: string | null
+  doneAt: string | null
+  plannedText: string | null
+  doneText: string | null
+  effectiveness: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  site: string | null
+  plant: string | null
+  causeOccur: string | null
+  causeEscape: string | null
+  countermeasure: string | null
+  verdict: string | null
+  before: {
+    bigYItem: string | null
+    bigYMethod: string | null
+    bigYScore: number | null
+    smallYMethod: string | null
+    smallYScore: number | null
+  }
+  after: { smallYMethod: string | null; smallYScore: number | null; bigYMethod: string | null; bigYScore: number | null }
+}
+
+export type RepairRow = {
+  id: number
+  testedAt: string | null
+  serialNo: string | null
+  productModel: string | null
+  line: string | null
+  station: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  kpovName: string | null
+  defectDesc: string | null
+  improvement: string | null
+  improvedAt: string | null
+  improvePlanned: boolean
+  levelBefore: number | null
+  levelAfter: number | null
 }
 
 export type RepairDetail = {
@@ -272,6 +371,26 @@ export const api = {
   history: (kpovNo: string, equipmentCode: string) =>
     get<HistoryResponse>(`/kpov/${encodeURIComponent(kpovNo)}/${encodeURIComponent(equipmentCode)}/history`),
   events: (p: Scope & { levelAfter?: string }) => get<EventsResponse>('/events', p),
+  complaintSummary: (p: Scope & { page: number }) =>
+    get<ComplaintSummary>('/complaints/summary', { ...p, page: String(p.page) }),
+  processSummary: (p: Scope & { page: number }) =>
+    get<ProcessSummary>('/process/summary', { ...p, page: String(p.page) }),
+  complaints: (p: { q?: string; page: number }) =>
+    get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
+  repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
+  async saveEmergencyMeasure(
+    key: { repairSerial: string; kpovNo: string; equipmentCode: string },
+    measure: Omit<EmergencyMeasure, 'updatedAt'>,
+  ) {
+    const res = await fetch(`${BASE}/emergency-measures`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...key, ...measure }),
+    })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '儲存失敗')
+    return body as EmergencyMeasure
+  },
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>

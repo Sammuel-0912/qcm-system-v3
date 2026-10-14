@@ -247,6 +247,55 @@ class FactLevelEvent(Base):
     repair: Mapped[FactRepair | None] = relationship(back_populates="events")
 
 
+class FactComplaint(Base):
+    """客訴報表（8D）。只供顯示與追蹤，不產生等級異動事件。
+
+    以（設備代碼, KPOV 編號）對到 KPOV 庫；來源未填時以（製程單元, 產品KPOV）呈現並標示未對應。
+    """
+
+    __tablename__ = "fact_complaint"
+    __table_args__ = (Index("ix_complaint_target", "batch_id", "kpov_no", "equipment_code"),)
+
+    id: Mapped[int] = _pk()
+    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batch.id", ondelete="CASCADE"), nullable=False)
+    seq: Mapped[int | None] = mapped_column(Integer)
+    report_no: Mapped[str | None] = mapped_column(Text)  # 8D 編號
+    site: Mapped[str | None] = mapped_column(Text)
+    plant: Mapped[str | None] = mapped_column(Text)
+    complained_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    customer: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    item: Mapped[str | None] = mapped_column(Text)  # 客訴項目
+    process_unit: Mapped[str | None] = mapped_column(Text)
+    # 改善前盤查
+    big_y_item_before: Mapped[str | None] = mapped_column(Text)
+    big_y_method_before: Mapped[str | None] = mapped_column(Text)
+    big_y_score_before: Mapped[int | None] = mapped_column(SmallInteger)
+    product_kpov: Mapped[str | None] = mapped_column(Text)
+    small_y_method_before: Mapped[str | None] = mapped_column(Text)
+    small_y_score_before: Mapped[int | None] = mapped_column(SmallInteger)
+    level_before: Mapped[int | None] = mapped_column(SmallInteger)
+    cause_occur: Mapped[str | None] = mapped_column(Text)
+    cause_escape: Mapped[str | None] = mapped_column(Text)
+    # 改善對策
+    countermeasure: Mapped[str | None] = mapped_column(Text)
+    owner: Mapped[str | None] = mapped_column(Text)
+    planned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    done_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    planned_text: Mapped[str | None] = mapped_column(Text)  # 原文（可能多項，例：1.2026/11/3 2.2026/7/30）
+    done_text: Mapped[str | None] = mapped_column(Text)
+    effectiveness: Mapped[str | None] = mapped_column(Text)
+    # 改善後盤查
+    small_y_method_after: Mapped[str | None] = mapped_column(Text)
+    small_y_score_after: Mapped[int | None] = mapped_column(SmallInteger)
+    big_y_method_after: Mapped[str | None] = mapped_column(Text)
+    big_y_score_after: Mapped[int | None] = mapped_column(SmallInteger)
+    level_after: Mapped[int | None] = mapped_column(SmallInteger)
+    verdict: Mapped[str | None] = mapped_column(Text)
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    kpov_no: Mapped[str | None] = mapped_column(Text)
+
+
 CHANGE_KINDS = ("PCN", "ECN")
 
 
@@ -395,3 +444,44 @@ class CheckPhotoInspection(Base):
     inspected_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
     )
+
+
+SOLUTION_TYPES = ("technical", "management")
+TECH_TARGETS = ("KPOV", "KPIV")
+
+
+class EmergencyMeasure(Base):
+    """高風險異動的緊急措施分類（使用者在等級異動總覽填寫）。
+
+    不掛 batch_id：這是使用者輸入的資料，重新匯入 Excel 不可洗掉。
+    以（維修序號, KPOV 編號, 設備代碼）自然鍵對到修護報表的那一筆維修。
+    技術解／管理解二選一；技術解再分 KPOV（設計消除、設備攔截）或 KPIV（防呆防錯、智能監控）。
+    """
+
+    __tablename__ = "emergency_measure"
+    __table_args__ = (
+        UniqueConstraint("repair_serial", "kpov_no", "equipment_code", name="uq_emergency_measure_target"),
+        CheckConstraint(f"solution_type IN {SOLUTION_TYPES}", name="ck_emergency_solution_type"),
+        CheckConstraint(
+            f"tech_target IS NULL OR tech_target IN {TECH_TARGETS}", name="ck_emergency_tech_target"
+        ),
+    )
+
+    id: Mapped[int] = _pk()
+    repair_serial: Mapped[str] = mapped_column(Text, nullable=False)
+    kpov_no: Mapped[str] = mapped_column(Text, nullable=False)
+    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    solution_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    tech_target: Mapped[str | None] = mapped_column(String(8))
+    design_elimination: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    equipment_interception: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    foolproof: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    smart_monitoring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    management_note: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: dt.datetime.now(dt.timezone.utc),
+        onupdate=lambda: dt.datetime.now(dt.timezone.utc),
+    )
+

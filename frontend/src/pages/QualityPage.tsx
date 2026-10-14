@@ -7,6 +7,8 @@ import {
   api,
   type CheckMonitorResponse,
   type ChangeKind,
+  type ComplaintSummary,
+  type ProcessSummary,
   type ChangeWindow,
   type LevelChangesResponse,
   type FiltersResponse,
@@ -22,6 +24,8 @@ import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
 import { LevelCountBar } from '../components/LevelCountBar'
+import { LevelTallyBar } from '../components/LevelTallyBar'
+import { TrackingTable } from '../components/TrackingTable'
 import { LayoutMap } from '../components/LayoutMap'
 import { LevelTimeline } from '../components/LevelTimeline'
 import { MultiSelect } from '../components/MultiSelect'
@@ -104,6 +108,31 @@ export default function QualityPage() {
       setLoading(false)
     }
   }, [state.view, station, line, attribute])
+
+  // 左半邊：客訴問題追蹤（客訴報表）與製程問題追蹤（修護報表），吃上方篩選器，各自後端分頁
+  const [complaints, setComplaints] = useState<ComplaintSummary | null>(null)
+  const [complaintPage, setComplaintPage] = useState(1)
+  const [processRows, setProcessRows] = useState<ProcessSummary | null>(null)
+  const [processPage, setProcessPage] = useState(1)
+
+  useEffect(() => {
+    api
+      .complaintSummary({ station, line, attribute, page: complaintPage })
+      .then(setComplaints)
+      .catch(() => setComplaints(null))
+  }, [station, line, attribute, complaintPage, reloadKey])
+
+  useEffect(() => {
+    api
+      .processSummary({ station, line, attribute, page: processPage })
+      .then(setProcessRows)
+      .catch(() => setProcessRows(null))
+  }, [station, line, attribute, processPage, reloadKey])
+
+  useEffect(() => {
+    setComplaintPage(1)
+    setProcessPage(1)
+  }, [station, line, attribute])
 
   const loadChanges = useCallback(async () => {
     try {
@@ -308,6 +337,43 @@ export default function QualityPage() {
                 />
               )}
               {quadrant && <LevelCountBar counts={quadrant.scope} onSelect={setSelectedLevel} />}
+
+              <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
+                <LevelTallyBar
+                  title="Level 3 – Level 0 客訴筆數"
+                  series={[
+                    { label: '改善前', counts: complaints?.levelCounts.before ?? {} },
+                    { label: '改善後', counts: complaints?.levelCounts.after ?? {} },
+                  ]}
+                  total={complaints?.levelCounts.total ?? 0}
+                />
+                <TrackingTable
+                  title="客訴問題追蹤"
+                  countLabel="客訴筆數"
+                  data={complaints}
+                  onPageChange={setComplaintPage}
+                  onSelect={openHistory}
+                  emptyText="此範圍沒有客訴"
+                  storageKey="qcm.tracking.complaints"
+                />
+              </div>
+
+              <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
+                <LevelTallyBar
+                  title="Level 3 – Level 0 維修筆數（依 KPOV 現況等級）"
+                  series={[{ label: '現況', counts: processRows?.levelCounts.current ?? {} }]}
+                  total={processRows?.levelCounts.total ?? 0}
+                />
+                <TrackingTable
+                  title="製程問題追蹤（修護報表）"
+                  countLabel="維修筆數"
+                  data={processRows}
+                  onPageChange={setProcessPage}
+                  onSelect={openHistory}
+                  emptyText="此範圍沒有維修紀錄"
+                  storageKey="qcm.tracking.process"
+                />
+              </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-4">
               <DeviationPanel

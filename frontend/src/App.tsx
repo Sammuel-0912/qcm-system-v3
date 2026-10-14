@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
 import QualityPage from './pages/QualityPage'
+import ComplaintsPage from './pages/ComplaintsPage'
+import ProcessPage from './pages/ProcessPage'
 import ArDashboardPage from './pages/ArDashboardPage'
 import ArDevicesPage from './pages/ArDevicesPage'
 import ArInspectPage from './pages/ArInspectPage'
@@ -11,6 +13,8 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/quality" replace />} />
       <Route path="/quality" element={<QualityPage />} />
+      <Route path="/complaints" element={<ComplaintsPage />} />
+      <Route path="/process" element={<ProcessPage />} />
 
       <Route path="/ar/dashboard" element={<ArDashboardPage />} />
       <Route path="/ar/devices" element={<ArDevicesPage />} />

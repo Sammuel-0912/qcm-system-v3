@@ -34,6 +34,7 @@ SHEET_PREFIXES: dict[str, tuple[str, ...]] = {
     "pcn": ("PCN 紀錄", "PCN紀錄"),
     "ecn": ("ECN 紀錄", "ECN紀錄"),
     "check_item": ("高風險項點檢",),
+    "complaint": ("客訴報表",),
 }
 
 KPOV_COLUMNS: dict[str, str] = {
@@ -223,6 +224,59 @@ CHANGE_COLUMNS: dict[str, str] = {
 }
 CHANGE_PAIRED = ("small_y", "big_y", "level")
 CHANGE_REQUIRED = ("切入時間", "內容")
+
+# 客訴報表：三層合併表頭，同名欄位（偵測方式、偵測度、簡述作業方式…）重複多次，
+# 無法以名稱對應，改以欄位位置對應；匯入時再以 COMPLAINT_HEADER_CHECKS 驗證表頭文字，
+# 來源檔欄位若有增減會直接報錯，而不是默默讀錯欄。
+COMPLAINT_COLUMNS: dict[str, str] = {
+    "A": "seq",
+    "B": "report_no",
+    "C": "site",
+    "D": "plant",
+    "E": "complained_at",
+    "F": "customer",
+    "G": "category",
+    "H": "item",
+    "I": "process_unit",
+    "J": "big_y_item_before",
+    "K": "big_y_method_before",
+    "L": "big_y_score_before",
+    "M": "product_kpov",
+    "N": "small_y_method_before",
+    "O": "small_y_score_before",
+    "P": "level_before",
+    "W": "cause_occur",
+    "X": "cause_escape",
+    "AF": "countermeasure",
+    "AG": "owner",
+    "AH": "planned_text",
+    "AI": "done_text",
+    "AJ": "effectiveness",
+    "AL": "small_y_method_after",
+    "AM": "small_y_score_after",
+    "AO": "big_y_method_after",
+    "AP": "big_y_score_after",
+    "AQ": "level_after",
+    "AX": "verdict",
+    "AY": "equipment_code",
+    "AZ": "kpov_no",
+}
+COMPLAINT_HEADER_CHECKS: dict[str, str] = {
+    "A": "序號",
+    "B": "8D編號",
+    "E": "日期",
+    "H": "客訴項目",
+    "M": "產品KPOV",
+    "P": "品質管控力",
+    "AF": "改善對策總結",
+    "AG": "責任人",
+    "AH": "預計完成時間",
+    "AI": "實際完成時間",
+    "AQ": "品質管控力",
+    "AY": "設備ID",
+    "AZ": "KPOV編號",
+}
+COMPLAINT_HEADER_ROWS = 6  # 表頭最多在前 6 列內
 
 CHECK_ITEM_COLUMNS: dict[str, str] = {
     "屬性1": "attribute1",

@@ -377,3 +377,117 @@ def test_level_changes_window_kind_and_paging(client):
     day = client.get("/api/v1/level-changes", params={"window": "day"}).json()
     assert day["counts"]["escalated"] == expected("ESCALATED", 1)
     assert client.get("/api/v1/level-changes", params={"window": "decade"}).status_code == 422
+
+
+V3 = RAW.parent / "數據庫-1011.xlsx"
+
+
+def _import_v3(client):
+    with V3.open("rb") as fh:
+        res = client.post(
+            "/api/v1/import",
+            files={"file": (V3.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_complaints_list_and_summary(client):
+    report = _import_v3(client)["report"]
+    assert report["rowCounts"]["complaints"] == 8  # 序號 1–6、8、9；範本列與字典列略過
+
+    listing = client.get("/api/v1/complaints").json()
+    assert listing["total"] == 8 and len(listing["items"]) == 8
+    by_seq = {c["seq"]: c for c in listing["items"]}
+    assert by_seq[8]["complainedAt"].startswith("2026-07-10")  # 文字日期
+    assert by_seq[2]["doneAt"] is None  # 「1.NA 2.2026/7/24」尚未全部完成
+    assert by_seq[2]["plannedAt"].startswith("2026-11-03")  # 多項取最晚
+    assert by_seq[1]["kpovNo"] == "K00004" and by_seq[2]["kpovNo"] is None  # #N/A -> 空
+    assert client.get("/api/v1/complaints", params={"q": "sharp"}).json()["total"] == 2
+    paged = client.get("/api/v1/complaints", params={"pageSize": 3, "page": 3}).json()
+    assert paged["pages"] == 3 and len(paged["items"]) == 2
+
+    summary = client.get("/api/v1/complaints/summary").json()
+    assert summary["levelCounts"]["before"] == {"0": 0, "1": 0, "2": 0, "3": 8}
+    assert summary["levelCounts"]["after"] == {"0": 3, "1": 4, "2": 1, "3": 0}
+    mapped = [r for r in summary["items"] if r["mapped"]]
+    assert len(mapped) == 1
+    assert (mapped[0]["station"], mapped[0]["kpovNo"], mapped[0]["count"]) == ("鎖銅排", "K00004", 1)
+    assert all(r["tracking"] == 0 for r in summary["items"])
+    assert sum(r["count"] for r in summary["items"]) == 8
+
+    # 有篩選時只計入對應到範圍內 KPOV 的客訴
+    scoped = client.get("/api/v1/complaints/summary", params={"target": "equip:OT00420118"}).json()
+    assert scoped["levelCounts"]["total"] == 1 and scoped["total"] == 1
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_process_summary_and_repairs_list(client):
+    _import_v3(client)
+    repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()
+    assert repairs["total"] == 27
+    assert client.get("/api/v1/repairs", params={"q": "K00057"}).json()["total"] > 0
+
+    summary = client.get("/api/v1/process/summary").json()
+    assert summary["pageSize"] == 10 and len(summary["items"]) <= 10
+    counted = sum(summary["levelCounts"]["current"].values())
+    assert counted == summary["levelCounts"]["total"]
+    # 對得到 KPOV 的維修都要進到彙總（K00051/A0003 對不到 KPOV，不列入）
+    assert summary["levelCounts"]["total"] == 25
+    full = client.get("/api/v1/process/summary", params={"pageSize": 50}).json()
+    assert sum(r["count"] for r in full["items"]) == 25
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_emergency_measure_classification(client):
+    _import_v3(client)
+    escalated = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
+    row = next(i for i in escalated if i["repairSerial"])
+    assert row["complaintCount"] == 0 and row["measure"] is None
+    improved = client.get("/api/v1/level-changes", params={"window": "year", "kind": "improved"}).json()["items"]
+    assert all("measure" not in i and "complaintCount" not in i for i in improved)
+
+    key = {"repairSerial": row["repairSerial"], "kpovNo": row["kpovNo"], "equipmentCode": row["equipmentCode"]}
+
+    def save(**body):
+        return client.put("/api/v1/emergency-measures", json={**key, **body})
+
+    def current():
+        items = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
+        return next(
+            i["measure"]
+            for i in items
+            if (i["repairSerial"], i["kpovNo"], i["equipmentCode"])
+            == (key["repairSerial"], key["kpovNo"], key["equipmentCode"])
+        )
+
+    assert save(solutionType="technical", techTarget="KPOV", designElimination=True).status_code == 200
+    m = current()
+    assert (m["solutionType"], m["techTarget"], m["designElimination"], m["equipmentInterception"]) == (
+        "technical", "KPOV", True, False,
+    )
+
+    # 改成 KPIV：KPOV 的兩個框要被清掉
+    save(solutionType="technical", techTarget="KPIV", designElimination=True, smartMonitoring=True)
+    m = current()
+    assert m["techTarget"] == "KPIV" and m["smartMonitoring"] and not m["designElimination"]
+
+    # 改成管理解：技術欄位清空
+    assert save(solutionType="management", managementNote="  加強稽核頻率  ").status_code == 200
+    m = current()
+    assert m["solutionType"] == "management" and m["managementNote"] == "加強稽核頻率"
+    assert m["techTarget"] is None and not m["smartMonitoring"]
+
+    assert save(solutionType="management", managementNote="   ").status_code == 422
+    assert save(solutionType="technical").status_code == 422
+    assert save(solutionType="other").status_code == 422
+    missing = client.put(
+        "/api/v1/emergency-measures",
+        json={**key, "repairSerial": "NOPE", "solutionType": "management", "managementNote": "x"},
+    )
+    assert missing.status_code == 404
+
+    # 不掛批次：重新匯入後分類仍在
+    _import_v3(client)
+    assert current()["managementNote"] == "加強稽核頻率"

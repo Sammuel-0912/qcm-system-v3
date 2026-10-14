@@ -18,12 +18,15 @@ from ...importer.excel import ImportError_, import_workbook
 from ...models import (
     CheckPhotoInspection,
     DimEquipment,
+    EmergencyMeasure,
     FactChangeRecord,
     FactCheckItem,
+    FactComplaint,
     FactLevelEvent,
     FactRepair,
     ImportBatch,
 )
+from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
@@ -471,6 +474,14 @@ def list_level_changes(
         else {}
     )
 
+    # 高風險列附上使用者填的緊急措施分類（以維修序號＋KPOV＋設備定位，不隨匯入批次變動）
+    measures: dict[tuple, EmergencyMeasure] = {}
+    if kind == "escalated":
+        serials = {e.repair_serial for e in page_items if e.repair_serial}
+        if serials:
+            for m in session.scalars(select(EmergencyMeasure).where(EmergencyMeasure.repair_serial.in_(serials))):
+                measures[(m.repair_serial, m.kpov_no, m.equipment_code)] = m
+
     items = []
     for e in page_items:
         kpov = allowed[(e.kpov_no, e.equipment_code)]
@@ -498,6 +509,11 @@ def list_level_changes(
                 "repairSerial": e.repair_serial,
             }
         )
+        if kind == "escalated":
+            measure = measures.get((e.repair_serial, e.kpov_no, e.equipment_code))
+            items[-1]["measure"] = _measure_out(measure) if measure else None
+            # 客訴筆數：尚未定義對應規則，先固定 0（使用者指定）
+            items[-1]["complaintCount"] = 0
 
     return {
         "window": window,
@@ -510,6 +526,275 @@ def list_level_changes(
         "pages": pages,
         "items": items,
     }
+
+
+# --------------------------------------------------------------------------- 緊急措施分類
+
+
+class EmergencyMeasureIn(BaseModel):
+    repair_serial: str = Field(alias="repairSerial", min_length=1)
+    kpov_no: str = Field(alias="kpovNo", min_length=1)
+    equipment_code: str = Field(alias="equipmentCode", min_length=1)
+    solution_type: str = Field(alias="solutionType", pattern="^(technical|management)$")
+    tech_target: str | None = Field(None, alias="techTarget", pattern="^(KPOV|KPIV)$")
+    design_elimination: bool = Field(False, alias="designElimination")
+    equipment_interception: bool = Field(False, alias="equipmentInterception")
+    foolproof: bool = False
+    smart_monitoring: bool = Field(False, alias="smartMonitoring")
+    management_note: str | None = Field(None, alias="managementNote")
+
+
+def _measure_out(m: EmergencyMeasure) -> dict:
+    return {
+        "solutionType": m.solution_type,
+        "techTarget": m.tech_target,
+        "designElimination": m.design_elimination,
+        "equipmentInterception": m.equipment_interception,
+        "foolproof": m.foolproof,
+        "smartMonitoring": m.smart_monitoring,
+        "managementNote": m.management_note,
+        "updatedAt": m.updated_at.isoformat() if m.updated_at else None,
+    }
+
+
+@router.put("/emergency-measures")
+def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(get_session)):
+    """儲存一筆高風險異動的緊急措施分類（upsert）。
+
+    技術解／管理解二選一；技術解再分 KPOV 或 KPIV，只保留該分類的兩個勾選項，
+    切換分類時另一組一律清除，避免資料庫留下互相矛盾的組合。
+    """
+    batch = _batch_or_404(session)
+    exists = session.scalar(
+        select(FactRepair.id).where(
+            FactRepair.batch_id == batch.id,
+            FactRepair.serial_no == data.repair_serial,
+            FactRepair.kpov_no == data.kpov_no,
+            FactRepair.equipment_code == data.equipment_code,
+        )
+    )
+    if exists is None:
+        raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
+
+    fields = {
+        "solution_type": data.solution_type,
+        "tech_target": None,
+        "design_elimination": False,
+        "equipment_interception": False,
+        "foolproof": False,
+        "smart_monitoring": False,
+        "management_note": None,
+    }
+    if data.solution_type == "technical":
+        if not data.tech_target:
+            raise HTTPException(status_code=422, detail="技術解需選擇 KPOV 或 KPIV")
+        fields["tech_target"] = data.tech_target
+        if data.tech_target == "KPOV":
+            fields["design_elimination"] = data.design_elimination
+            fields["equipment_interception"] = data.equipment_interception
+        else:
+            fields["foolproof"] = data.foolproof
+            fields["smart_monitoring"] = data.smart_monitoring
+    else:
+        note = (data.management_note or "").strip()
+        if not note:
+            raise HTTPException(status_code=422, detail="管理解請填寫內容")
+        fields["management_note"] = note
+
+    measure = session.scalars(
+        select(EmergencyMeasure).where(
+            EmergencyMeasure.repair_serial == data.repair_serial,
+            EmergencyMeasure.kpov_no == data.kpov_no,
+            EmergencyMeasure.equipment_code == data.equipment_code,
+        )
+    ).first()
+    if measure is None:
+        measure = EmergencyMeasure(
+            repair_serial=data.repair_serial, kpov_no=data.kpov_no, equipment_code=data.equipment_code, **fields
+        )
+        session.add(measure)
+    else:
+        for key, value in fields.items():
+            setattr(measure, key, value)
+        measure.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.commit()
+    return _measure_out(measure)
+
+
+# --------------------------------------------------------------------------- 客訴／製程問題追蹤
+
+
+def _scope(session: Session, batch_id: int, station, line, attribute, target):
+    states = build_states(session, batch_id)
+    filtered = bool(station or line or attribute or target)
+    scoped, _ = apply_filters(session, batch_id, states, station, line, attribute, target)
+    return states, scoped, filtered
+
+
+@router.get("/complaints/summary")
+def get_complaint_summary(
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """首頁：Level 3–0 客訴筆數（改善前／改善後）與客訴問題追蹤表（後端分頁）。
+
+    有篩選（站別／線別／屬性／Layout 選取）時，只計入有對應到範圍內 KPOV 的客訴。
+    """
+    batch = _batch_or_404(session)
+    states, scoped, filtered = _scope(session, batch.id, station, line, attribute, target)
+    counts, rows = complaint_summary(session, batch.id, states, scoped if filtered else None)
+    return {"levelCounts": counts, **paginate(rows, page, page_size)}
+
+
+@router.get("/process/summary")
+def get_process_summary(
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    target: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """首頁：製程問題追蹤（修護報表）— Level 3–0 維修筆數與追蹤表（後端分頁）。"""
+    batch = _batch_or_404(session)
+    _, scoped, _ = _scope(session, batch.id, station, line, attribute, target)
+    counts, rows = process_summary(session, batch.id, scoped)
+    return {"levelCounts": counts, **paginate(rows, page, page_size)}
+
+
+def _matches(q: str | None, *values) -> bool:
+    if not q:
+        return True
+    needle = q.strip().lower()
+    return any(needle in str(v).lower() for v in values if v is not None)
+
+
+def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
+    out = {
+        "id": c.id,
+        "seq": c.seq,
+        "reportNo": c.report_no,
+        "complainedAt": c.complained_at.isoformat() if c.complained_at else None,
+        "customer": c.customer,
+        "category": c.category,
+        "item": c.item,
+        "processUnit": c.process_unit,
+        "productKpov": c.product_kpov,
+        "levelBefore": c.level_before,
+        "levelAfter": c.level_after,
+        "owner": c.owner,
+        "plannedAt": c.planned_at.isoformat() if c.planned_at else None,
+        "doneAt": c.done_at.isoformat() if c.done_at else None,
+        "plannedText": c.planned_text,
+        "doneText": c.done_text,
+        "effectiveness": c.effectiveness,
+        "equipmentCode": c.equipment_code,
+        "kpovNo": c.kpov_no,
+    }
+    if full:
+        out.update(
+            {
+                "site": c.site,
+                "plant": c.plant,
+                "causeOccur": c.cause_occur,
+                "causeEscape": c.cause_escape,
+                "countermeasure": c.countermeasure,
+                "verdict": c.verdict,
+                "before": {
+                    "bigYItem": c.big_y_item_before,
+                    "bigYMethod": c.big_y_method_before,
+                    "bigYScore": c.big_y_score_before,
+                    "smallYMethod": c.small_y_method_before,
+                    "smallYScore": c.small_y_score_before,
+                },
+                "after": {
+                    "smallYMethod": c.small_y_method_after,
+                    "smallYScore": c.small_y_score_after,
+                    "bigYMethod": c.big_y_method_after,
+                    "bigYScore": c.big_y_score_after,
+                },
+            }
+        )
+    return out
+
+
+@router.get("/complaints")
+def list_complaints(
+    q: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """客訴清單（後端分頁、關鍵字搜尋），新到舊。"""
+    batch = _batch_or_404(session)
+    complaints = session.scalars(
+        select(FactComplaint)
+        .where(FactComplaint.batch_id == batch.id)
+        .order_by(FactComplaint.complained_at.desc(), FactComplaint.seq.desc())
+    ).all()
+    rows = [
+        _complaint_out(c, full=True)
+        for c in complaints
+        if _matches(q, c.report_no, c.customer, c.category, c.item, c.process_unit, c.product_kpov, c.owner, c.kpov_no)
+    ]
+    return paginate(rows, page, page_size)
+
+
+@router.get("/repairs")
+def list_repairs(
+    q: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """製程清單：修護報表（後端分頁、關鍵字搜尋），依測試時間新到舊。"""
+    batch = _batch_or_404(session)
+    states = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in build_states(session, batch.id)}
+    repairs = session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)).all()
+    epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+    def utc(value):
+        if value is None:
+            return None
+        return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+
+    repairs = sorted(repairs, key=lambda r: utc(r.tested_at) or epoch, reverse=True)
+    now = dt.datetime.now(dt.timezone.utc)
+    rows = []
+    for r in repairs:
+        state = states.get((r.kpov_no, r.equipment_code))
+        name = state.kpov.kpov_name if state else None
+        station = r.station or (state.kpov.station if state else None)
+        if not _matches(q, r.serial_no, r.product_model, r.line, station, r.equipment_code, r.kpov_no, name,
+                        r.product_defect_desc, r.improvement):
+            continue
+        improve_at = utc(r.improvement_effective_at)
+        rows.append(
+            {
+                "id": r.id,
+                "testedAt": utc(r.tested_at).isoformat() if r.tested_at else None,
+                "serialNo": r.serial_no,
+                "productModel": r.product_model,
+                "line": r.line,
+                "station": station,
+                "equipmentCode": r.equipment_code,
+                "kpovNo": r.kpov_no,
+                "kpovName": name,
+                "defectDesc": r.product_defect_desc or r.defect_desc,
+                "improvement": r.improvement,
+                "improvedAt": improve_at.isoformat() if improve_at else None,
+                "improvePlanned": bool(improve_at and improve_at > now),
+                "levelBefore": state.level_baseline if state else None,
+                "levelAfter": state.level_current if state else None,
+            }
+        )
+    return paginate(rows, page, page_size)
 
 
 @router.post("/import")
