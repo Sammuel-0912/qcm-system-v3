@@ -528,6 +528,54 @@ def list_level_changes(
     }
 
 
+# --------------------------------------------------------------------------- 站別風險地圖
+
+
+@router.get("/station-risk")
+def get_station_risk(
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    session: Session = Depends(get_session),
+):
+    """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數。
+
+    維修依測試時間、客訴依客訴日期落在區間內計數。客訴未填設備ID 者無法歸到任何站，
+    另計 unmappedComplaints，由前端提示。不套用上方篩選：地圖本身就是全線一覽。
+    """
+    batch = _batch_or_404(session)
+    now = dt.datetime.now(dt.timezone.utc)
+    since = now - dt.timedelta(days=CHANGE_WINDOWS[window])
+
+    def in_window(value: dt.datetime | None) -> bool:
+        if value is None:
+            return False
+        value = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+        return since <= value <= now
+
+    stations: dict[str, dict[str, int]] = {}
+
+    def bucket(code: str) -> dict[str, int]:
+        return stations.setdefault(code, {"repairs": 0, "complaints": 0})
+
+    for code, tested_at in session.execute(
+        select(FactRepair.equipment_code, FactRepair.tested_at).where(FactRepair.batch_id == batch.id)
+    ):
+        if code and in_window(tested_at):
+            bucket(code)["repairs"] += 1
+
+    unmapped = 0
+    for code, complained_at in session.execute(
+        select(FactComplaint.equipment_code, FactComplaint.complained_at).where(FactComplaint.batch_id == batch.id)
+    ):
+        if not in_window(complained_at):
+            continue
+        if code:
+            bucket(code)["complaints"] += 1
+        else:
+            unmapped += 1
+
+    return {"window": window, "since": since.isoformat(), "stations": stations, "unmappedComplaints": unmapped}
+
+
 # --------------------------------------------------------------------------- 緊急措施分類
 
 
