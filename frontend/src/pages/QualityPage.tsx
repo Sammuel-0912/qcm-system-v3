@@ -17,7 +17,6 @@ import {
   type QuadrantResponse,
   type TrendResponse,
 } from '../api/client'
-import { VIEW_LABELS } from '../constants'
 import { HOTSPOTS } from '../layoutConfig'
 import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
@@ -45,14 +44,15 @@ const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
 ]
 const DEFAULT_WINDOW: ChangeWindow = 'month'
 
-// 篩選、口徑與 layout 選取全部同步到 URL（spec.md REQ-UI-09）
+// 象限圖與 Level 明細固定看基準口徑（KPOV 數據庫原始 Level），不提供現況／目標切換
+const VIEW = 'baseline'
+
+// 篩選與 layout 選取全部同步到 URL（spec.md REQ-UI-09）
 function readUrl(params: URLSearchParams) {
   const list = (key: string) => (params.get(key) ? params.get(key)!.split(',').filter(Boolean) : [])
-  const view = params.get('view')
   const window = params.get('window')
   return {
     window: (WINDOWS.some((w) => w.value === window) ? window : DEFAULT_WINDOW) as ChangeWindow,
-    view: view && view in VIEW_LABELS ? view : 'current',
     attributes: list('attribute'),
     stations: list('station'),
     lines: list('line'),
@@ -63,7 +63,6 @@ function readUrl(params: URLSearchParams) {
 
 function toParams(state: ReturnType<typeof readUrl>): URLSearchParams {
   const params = new URLSearchParams()
-  if (state.view !== 'current') params.set('view', state.view)
   if (state.attributes.length) params.set('attribute', state.attributes.join(','))
   if (state.stations.length) params.set('station', state.stations.join(','))
   if (state.lines.length) params.set('line', state.lines.join(','))
@@ -112,7 +111,7 @@ export default function QualityPage() {
     try {
       const [f, q] = await Promise.all([
         api.filters(),
-        api.quadrant({ view: state.view, station, line, attribute, window: changeWindow }),
+        api.quadrant({ view: VIEW, station, line, attribute, window: changeWindow }),
       ])
       setFilters(f)
       setQuadrant(q)
@@ -121,7 +120,7 @@ export default function QualityPage() {
     } finally {
       setLoading(false)
     }
-  }, [state.view, station, line, attribute, changeWindow])
+  }, [station, line, attribute, changeWindow])
 
   // 左半邊：客訴問題追蹤（客訴報表）與製程問題追蹤（修護報表），吃上方篩選器，各自後端分頁
   const [complaints, setComplaints] = useState<ComplaintSummary | null>(null)
@@ -210,7 +209,7 @@ export default function QualityPage() {
     const scope = state.target ? { target: state.target } : { station, line, attribute }
     void api
       .kpov({
-        view: state.view,
+        view: VIEW,
         ...scope,
         level: String(selectedLevel),
         deviatedOnly: state.deviatedOnly ? '1' : undefined,
@@ -218,7 +217,7 @@ export default function QualityPage() {
       })
       .then(setKpovList)
       .catch(() => setKpovList(null))
-  }, [selectedLevel, state.view, state.deviatedOnly, state.target, station, line, attribute, changeWindow])
+  }, [selectedLevel, state.deviatedOnly, state.target, station, line, attribute, changeWindow])
 
   const worstLevels = useMemo(() => {
     const map: Record<string, number | null> = {}
@@ -260,20 +259,6 @@ export default function QualityPage() {
 
   const headerActions = (
     <>
-      <span className="text-xs text-slate-500">口徑</span>
-      <div className="flex rounded-md border border-slate-300 p-0.5">
-        {Object.entries(VIEW_LABELS).map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => setState((s) => ({ ...s, view: value }))}
-            className={`rounded px-3 py-1 text-sm transition ${
-              state.view === value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
       <button
         onClick={() => setShowImport(true)}
         className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
