@@ -193,6 +193,8 @@ class FactRepair(Base):
     small_y_method_after: Mapped[str | None] = mapped_column(Text)
     big_y_method_after: Mapped[str | None] = mapped_column(Text)
     improvement: Mapped[str | None] = mapped_column(Text)
+    # 長期措施：預留，修護報表日後加「長期措施」欄時自動匯入
+    long_term_measure: Mapped[str | None] = mapped_column(Text)
     # 「提升後」
     small_y_method_improved: Mapped[str | None] = mapped_column(Text)
     big_y_method_improved: Mapped[str | None] = mapped_column(Text)
@@ -292,6 +294,13 @@ class FactComplaint(Base):
     big_y_score_after: Mapped[int | None] = mapped_column(SmallInteger)
     level_after: Mapped[int | None] = mapped_column(SmallInteger)
     verdict: Mapped[str | None] = mapped_column(Text)
+    # 改善對策的措施層別（客訴報表 Z–AE 欄；有填內容即視為採用該措施）
+    mgmt_measure: Mapped[str | None] = mapped_column(Text)
+    tech_ccsc_interception: Mapped[str | None] = mapped_column(Text)
+    tech_kpov_design_elimination: Mapped[str | None] = mapped_column(Text)
+    tech_kpov_interception: Mapped[str | None] = mapped_column(Text)
+    tech_kpiv_foolproof: Mapped[str | None] = mapped_column(Text)
+    tech_kpiv_smart: Mapped[str | None] = mapped_column(Text)
     equipment_code: Mapped[str | None] = mapped_column(Text)
     kpov_no: Mapped[str | None] = mapped_column(Text)
 

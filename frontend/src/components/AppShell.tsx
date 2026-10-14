@@ -49,12 +49,12 @@ function SideNav() {
                     to={item.to}
                     aria-current={active ? 'page' : undefined}
                     className={`block rounded-md px-2.5 py-2 transition ${
-                      active ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
+                      active ? 'bg-[#0086DB] text-white' : 'text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <span className="block text-sm font-medium">{item.label}</span>
                     {item.hint && (
-                      <span className={`block text-xs ${active ? 'text-slate-300' : 'text-slate-400'}`}>
+                      <span className={`block text-xs ${active ? 'text-sky-100' : 'text-slate-400'}`}>
                         {item.hint}
                       </span>
                     )}

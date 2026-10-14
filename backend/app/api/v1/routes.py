@@ -26,6 +26,7 @@ from ...models import (
     FactRepair,
     ImportBatch,
 )
+from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
 from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
@@ -437,6 +438,7 @@ def list_level_changes(
     states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in scoped}
+    states_by_key = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in scoped}
 
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(days=CHANGE_WINDOWS[window])
@@ -467,53 +469,33 @@ def list_level_changes(
     page = min(page, pages)
     page_items = selected[(page - 1) * page_size : page * page_size]
 
+    # 列內容以「該筆異動所屬的維修」組成，與客訴／製程追蹤同一套欄位（services/measure_rows.py）
     repair_ids = {e.repair_id for e in page_items if e.repair_id}
     repairs = (
         {r.id: r for r in session.scalars(select(FactRepair).where(FactRepair.id.in_(repair_ids)))}
         if repair_ids
         else {}
     )
-
-    # 高風險列附上使用者填的緊急措施分類（以維修序號＋KPOV＋設備定位，不隨匯入批次變動）
-    measures: dict[tuple, EmergencyMeasure] = {}
-    if kind == "escalated":
-        serials = {e.repair_serial for e in page_items if e.repair_serial}
-        if serials:
-            for m in session.scalars(select(EmergencyMeasure).where(EmergencyMeasure.repair_serial.in_(serials))):
-                measures[(m.repair_serial, m.kpov_no, m.equipment_code)] = m
+    events = events_by_repair(session, batch.id)
+    measures = measures_for(session, list(repairs.values()))
 
     items = []
     for e in page_items:
-        kpov = allowed[(e.kpov_no, e.equipment_code)]
         repair = repairs.get(e.repair_id) if e.repair_id else None
-        # 惡化列顯示對應維修單的改善措施與（預計）改善時間；改善列的改善時間就是事件生效時間
-        if e.event_type == "IMPROVE":
-            improve_at = utc(e.effective_at)
-            improvement = e.improvement or (repair.improvement if repair else None)
-        else:
-            improve_at = utc(repair.improvement_effective_at) if repair and repair.improvement_effective_at else None
-            improvement = repair.improvement if repair else None
-        items.append(
-            {
-                "kpovNo": e.kpov_no,
-                "kpovName": kpov.kpov_name,
-                "station": kpov.station,
-                "equipmentCode": e.equipment_code,
-                "effectiveAt": utc(e.effective_at).isoformat(),
-                "levelBefore": e.level_before,
-                "levelAfter": e.level_after,
-                "transition": e.transition,
-                "improvement": improvement,
-                "improvedAt": improve_at.isoformat() if improve_at else None,
-                "improvePlanned": bool(improve_at and improve_at > now),
-                "repairSerial": e.repair_serial,
-            }
+        if repair is None:
+            continue  # 事件一律來自維修紀錄；找不到代表資料不一致，略過而不是組出半套的列
+        row = repair_row(
+            repair,
+            states_by_key.get((e.kpov_no, e.equipment_code)),
+            events.get(repair.id, {}),
+            measures.get((repair.serial_no, repair.kpov_no, repair.equipment_code)),
+            # 只有高風險列可編輯措施層別；已改善列只顯示同一份分類
+            editable=kind == "escalated",
+            now=now,
         )
-        if kind == "escalated":
-            measure = measures.get((e.repair_serial, e.kpov_no, e.equipment_code))
-            items[-1]["measure"] = _measure_out(measure) if measure else None
-            # 客訴筆數：尚未定義對應規則，先固定 0（使用者指定）
-            items[-1]["complaintCount"] = 0
+        row["transition"] = e.transition
+        row["effectiveAt"] = utc(e.effective_at).isoformat()
+        items.append(row)
 
     return {
         "window": window,
@@ -592,19 +574,6 @@ class EmergencyMeasureIn(BaseModel):
     management_note: str | None = Field(None, alias="managementNote")
 
 
-def _measure_out(m: EmergencyMeasure) -> dict:
-    return {
-        "solutionType": m.solution_type,
-        "techTarget": m.tech_target,
-        "designElimination": m.design_elimination,
-        "equipmentInterception": m.equipment_interception,
-        "foolproof": m.foolproof,
-        "smartMonitoring": m.smart_monitoring,
-        "managementNote": m.management_note,
-        "updatedAt": m.updated_at.isoformat() if m.updated_at else None,
-    }
-
-
 @router.put("/emergency-measures")
 def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(get_session)):
     """儲存一筆高風險異動的緊急措施分類（upsert）。
@@ -666,7 +635,7 @@ def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(
             setattr(measure, key, value)
         measure.updated_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
-    return _measure_out(measure)
+    return measure_out(measure)
 
 
 # --------------------------------------------------------------------------- 客訴／製程問題追蹤

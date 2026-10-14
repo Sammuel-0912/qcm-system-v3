@@ -409,13 +409,24 @@ def test_complaints_list_and_summary(client):
     assert paged["pages"] == 3 and len(paged["items"]) == 2
 
     summary = client.get("/api/v1/complaints/summary").json()
-    assert summary["levelCounts"]["before"] == {"0": 0, "1": 0, "2": 0, "3": 8}
-    assert summary["levelCounts"]["after"] == {"0": 3, "1": 4, "2": 1, "3": 0}
+    # 每格只有一個數字：依改善後 Level（目前狀態）
+    counts = summary["levelCounts"]
+    assert {k: counts[k] for k in "0123"} == {"0": 3, "1": 4, "2": 1, "3": 0} and counts["total"] == 8
     mapped = [r for r in summary["items"] if r["mapped"]]
     assert len(mapped) == 1
-    assert (mapped[0]["station"], mapped[0]["kpovNo"], mapped[0]["count"]) == ("鎖銅排", "K00004", 1)
-    assert all(r["tracking"] == 0 for r in summary["items"])
-    assert sum(r["count"] for r in summary["items"]) == 8
+    row = mapped[0]
+    assert (row["station"], row["kpovNo"], row["complaintCount"]) == ("鎖銅排", "K00004", 1)
+    assert sum(r["complaintCount"] for r in summary["items"]) == 8
+    # 客訴：Level(原)＝改善前；Level(變化後)＝改善前→改善後；措施層別讀 Excel（序號 1：AC、AD 欄有填）
+    assert row["levelOrig"]["after"] == 3
+    assert (row["levelChanged"]["before"], row["levelChanged"]["after"]) == (3, 1)
+    assert row["layer"]["editable"] is False
+    assert row["layer"]["summary"] == "技術解・KPOV：設備攔截；KPIV：防呆防錯"
+    assert row["emergency"]["text"] == "導入智能機械手臂自動鎖付"
+    assert row["improvedAt"].startswith("2025-12-05") and not row["improvePlanned"]
+    # 序號 6：實際完成未填、預計 2026/9/10 已過 -> 預計且逾期
+    overdue = [r for r in summary["items"] if r["improveOverdue"]]
+    assert overdue and all(r["improvePlanned"] for r in overdue)
 
     # 有篩選時只計入對應到範圍內 KPOV 的客訴
     scoped = client.get("/api/v1/complaints/summary", params={"target": "equip:OT00420118"}).json()
@@ -435,8 +446,22 @@ def test_process_summary_and_repairs_list(client):
     assert counted == summary["levelCounts"]["total"]
     # 對得到 KPOV 的維修都要進到彙總（K00051/A0003 對不到 KPOV，不列入）
     assert summary["levelCounts"]["total"] == 25
+    # 每筆維修一列
     full = client.get("/api/v1/process/summary", params={"pageSize": 50}).json()
-    assert sum(r["count"] for r in full["items"]) == 25
+    assert full["total"] == 25 and len(full["items"]) == 25
+    row = next(r for r in full["items"] if r["repairSerial"] == "ALG25B01310WB")
+    history = client.get(f"/api/v1/kpov/{row['kpovNo']}/{row['equipmentCode']}/history").json()["events"]
+    mine = {e["type"]: e for e in history if e["repairSerial"] == "ALG25B01310WB"}
+    # Level(原)＝該筆維修的惡化事件前→後；Level(變化後)＝該筆維修的改善事件前→後
+    assert (row["levelOrig"]["before"], row["levelOrig"]["after"]) == (
+        mine["DEGRADE"]["levelBefore"], mine["DEGRADE"]["levelAfter"],
+    )
+    assert (row["levelChanged"]["before"], row["levelChanged"]["after"]) == (
+        mine["IMPROVE"]["levelBefore"], mine["IMPROVE"]["levelAfter"],
+    )
+    assert row["emergency"]["at"].startswith("2025-11-17T09:20")  # 修復時間
+    assert row["longTerm"] is None and row["complaintCount"] == 0
+    assert row["layer"]["editable"] is False
 
 
 @pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
@@ -444,9 +469,10 @@ def test_emergency_measure_classification(client):
     _import_v3(client)
     escalated = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
     row = next(i for i in escalated if i["repairSerial"])
-    assert row["complaintCount"] == 0 and row["measure"] is None
+    assert row["complaintCount"] == 0 and row["layer"]["measure"] is None
+    assert row["layer"]["editable"] is True
     improved = client.get("/api/v1/level-changes", params={"window": "year", "kind": "improved"}).json()["items"]
-    assert all("measure" not in i and "complaintCount" not in i for i in improved)
+    assert improved and all(i["layer"]["editable"] is False for i in improved)
 
     key = {"repairSerial": row["repairSerial"], "kpovNo": row["kpovNo"], "equipmentCode": row["equipmentCode"]}
 
@@ -456,7 +482,7 @@ def test_emergency_measure_classification(client):
     def current():
         items = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
         return next(
-            i["measure"]
+            i["layer"]["measure"]
             for i in items
             if (i["repairSerial"], i["kpovNo"], i["equipmentCode"])
             == (key["repairSerial"], key["kpovNo"], key["equipmentCode"])

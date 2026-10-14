@@ -25,7 +25,7 @@ import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
 import { LevelCountBar } from '../components/LevelCountBar'
 import { LevelTallyBar } from '../components/LevelTallyBar'
-import { TrackingTable } from '../components/TrackingTable'
+import { MeasureTable } from '../components/MeasureTable'
 import { LayoutMap } from '../components/LayoutMap'
 import { StationRiskMap } from '../components/StationRiskMap'
 import { LevelTimeline } from '../components/LevelTimeline'
@@ -35,11 +35,22 @@ import { TrendChart } from '../components/TrendChart'
 
 const ATTRIBUTE_LABELS: Record<string, string> = { CTP: 'CTP 自動站', OP: 'OP 人工站' }
 
+// 天／週／月／年＝近 1／7／30／365 天：影響等級異動總覽與站別風險地圖
+const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
+  { value: 'day', label: '天', hint: '近 1 天' },
+  { value: 'week', label: '週', hint: '近 7 天' },
+  { value: 'month', label: '月', hint: '近 30 天' },
+  { value: 'year', label: '年', hint: '近 365 天' },
+]
+const DEFAULT_WINDOW: ChangeWindow = 'month'
+
 // 篩選、口徑與 layout 選取全部同步到 URL（spec.md REQ-UI-09）
 function readUrl(params: URLSearchParams) {
   const list = (key: string) => (params.get(key) ? params.get(key)!.split(',').filter(Boolean) : [])
   const view = params.get('view')
+  const window = params.get('window')
   return {
+    window: (WINDOWS.some((w) => w.value === window) ? window : DEFAULT_WINDOW) as ChangeWindow,
     view: view && view in VIEW_LABELS ? view : 'current',
     attributes: list('attribute'),
     stations: list('station'),
@@ -57,6 +68,7 @@ function toParams(state: ReturnType<typeof readUrl>): URLSearchParams {
   if (state.lines.length) params.set('line', state.lines.join(','))
   if (state.deviatedOnly) params.set('deviatedOnly', '1')
   if (state.target) params.set('target', state.target)
+  if (state.window !== DEFAULT_WINDOW) params.set('window', state.window)
   return params
 }
 
@@ -69,7 +81,7 @@ export default function QualityPage() {
   const [quadrant, setQuadrant] = useState<QuadrantResponse | null>(null)
   // 等級異動總覽：時間區間 × 惡化／已改善 × 頁碼（後端分頁，每頁 10 筆）
   const [changes, setChanges] = useState<LevelChangesResponse | null>(null)
-  const [changeWindow, setChangeWindow] = useState<ChangeWindow>('month')
+  const changeWindow = state.window
   const [changeKind, setChangeKind] = useState<ChangeKind>('escalated')
   const [changePage, setChangePage] = useState(1)
   const [checks, setChecks] = useState<CheckMonitorResponse | null>(null)
@@ -149,8 +161,8 @@ export default function QualityPage() {
     void loadChanges()
   }, [loadChanges, reloadKey])
 
-  // 篩選範圍變了，回到第 1 頁
-  useEffect(() => setChangePage(1), [station, line, attribute])
+  // 篩選範圍或期間變了，回到第 1 頁
+  useEffect(() => setChangePage(1), [station, line, attribute, changeWindow])
 
   // 下半部（趨勢 + 點檢監控）吃 layout 選取；未選時沿用上方篩選範圍
   const bottomScope = useMemo(
@@ -301,6 +313,30 @@ export default function QualityPage() {
               selected={state.stations}
               onChange={(next) => setState((s) => ({ ...s, stations: next }))}
             />
+            <div>
+              <span className="mb-1 block text-xs font-medium text-slate-500">期間</span>
+              <div
+                className="inline-flex rounded-md border border-slate-300 bg-white p-0.5"
+                role="tablist"
+                aria-label="期間"
+              >
+                {WINDOWS.map((w) => (
+                  <button
+                    key={w.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={changeWindow === w.value}
+                    title={`${w.hint}（等級異動總覽、站別風險地圖）`}
+                    onClick={() => setState((s) => ({ ...s, window: w.value }))}
+                    className={`rounded px-3 py-1.5 text-sm font-medium transition ${
+                      changeWindow === w.value ? 'bg-[#0086DB] text-white' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {(state.stations.length > 0 || state.lines.length > 0 || state.attributes.length > 0) && (
               <button
                 onClick={() => setState((s) => ({ ...s, stations: [], lines: [], attributes: [] }))}
@@ -342,15 +378,11 @@ export default function QualityPage() {
               <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
                 <LevelTallyBar
                   title="Level 3 – Level 0 客訴筆數"
-                  series={[
-                    { label: '改善前', counts: complaints?.levelCounts.before ?? {} },
-                    { label: '改善後', counts: complaints?.levelCounts.after ?? {} },
-                  ]}
+                  series={[{ label: '客訴筆數', counts: complaints?.levelCounts ?? {} }]}
                   total={complaints?.levelCounts.total ?? 0}
                 />
-                <TrackingTable
+                <MeasureTable
                   title="客訴問題追蹤"
-                  countLabel="客訴筆數"
                   data={complaints}
                   onPageChange={setComplaintPage}
                   onSelect={openHistory}
@@ -365,9 +397,8 @@ export default function QualityPage() {
                   series={[{ label: '現況', counts: processRows?.levelCounts.current ?? {} }]}
                   total={processRows?.levelCounts.total ?? 0}
                 />
-                <TrackingTable
+                <MeasureTable
                   title="製程問題追蹤（修護報表）"
-                  countLabel="維修筆數"
                   data={processRows}
                   onPageChange={setProcessPage}
                   onSelect={openHistory}
@@ -381,10 +412,6 @@ export default function QualityPage() {
                 data={changes}
                 window={changeWindow}
                 kind={changeKind}
-                onWindowChange={(w) => {
-                  setChangeWindow(w)
-                  setChangePage(1)
-                }}
                 onKindChange={(k) => {
                   setChangeKind(k)
                   setChangePage(1)

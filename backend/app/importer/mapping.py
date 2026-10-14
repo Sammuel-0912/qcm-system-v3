@@ -150,6 +150,8 @@ _REPAIR_COMMON: dict[str, str] = {
     "設備ID": "equipment_code",
     "KPOV 编号": "kpov_no",
     "改善措施": "improvement",
+    # 預留：修護報表日後加「長期措施」欄時自動匯入
+    "長期措施": "long_term_measure",
     # D-03：IMPROVE 生效時間。1011 版起修護報表提供「改善時間」
     "改善時間": "improvement_effective_at",
     "改善生效日": "improvement_effective_at",
@@ -247,6 +249,13 @@ COMPLAINT_COLUMNS: dict[str, str] = {
     "P": "level_before",
     "W": "cause_occur",
     "X": "cause_escape",
+    # 改善對策：管理解（流程卡控）與技術解（CC/SC 設備攔截；KPOV 設計消除／設備攔截；KPIV 防呆防錯／智能監控）
+    "Z": "mgmt_measure",
+    "AA": "tech_ccsc_interception",
+    "AB": "tech_kpov_design_elimination",
+    "AC": "tech_kpov_interception",
+    "AD": "tech_kpiv_foolproof",
+    "AE": "tech_kpiv_smart",
     "AF": "countermeasure",
     "AG": "owner",
     "AH": "planned_text",

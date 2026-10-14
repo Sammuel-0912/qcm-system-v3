@@ -122,25 +122,10 @@ export type EmergencyMeasure = {
   updatedAt?: string | null
 }
 
-/** 等級異動總覽：區間內的一筆惡化或改善 */
-export type LevelChangeItem = {
-  kpovNo: string
-  kpovName: string
-  station: string
-  equipmentCode: string
-  effectiveAt: string
-  levelBefore: number | null
-  levelAfter: number
+/** 等級異動總覽：區間內的一筆惡化或改善（列內容同 MeasureRow） */
+export type LevelChangeItem = MeasureRow & {
   transition: 'ESCALATED' | 'IMPROVED'
-  improvement: string | null
-  improvedAt: string | null
-  /** 改善時間在未來（預計改善） */
-  improvePlanned: boolean
-  repairSerial: string | null
-  /** 僅高風險列：使用者填的緊急措施分類（未分類為 null） */
-  measure?: EmergencyMeasure | null
-  /** 僅高風險列：客訴筆數（目前固定 0） */
-  complaintCount?: number
+  effectiveAt: string
 }
 
 export type LevelChangesResponse = {
@@ -157,30 +142,40 @@ export type LevelChangesResponse = {
 
 export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
 
-/** 客訴問題追蹤／製程問題追蹤的一列（兩表同格式） */
-export type TrackingRow = {
+export type LevelShift = { before: number | null; after: number | null; planned: boolean }
+
+/**
+ * 四張措施表（高風險、已改善、客訴問題追蹤、製程問題追蹤）共用的一列：
+ * 高風險站別｜高風險KPOV｜Level(原)｜緊急措施｜長期措施｜措施層別｜Level(變化後)｜改善時間｜客訴筆數
+ */
+export type MeasureRow = {
   station: string | null
   kpovNo: string | null
   kpovName: string | null
   equipmentCode: string | null
   /** 是否對應到 KPOV 庫；客訴未填設備ID／KPOV 編號者為 false */
   mapped: boolean
-  count: number
-  improvement: string | null
-  levelBefore: number | null
-  levelAfter: number | null
-  cutoverAt: string | null
-  cutoverPlanned: boolean
-  cutoverOverdue: boolean
-  tracking: number
-  lastAt: string | null
+  levelOrig: LevelShift | null
+  /** 緊急措施（原改善措施）與緊急措施時間（維修＝修復時間；客訴＝預計完成） */
+  emergency: { text: string | null; at: string | null }
+  longTerm: string | null
+  /** 措施層別：editable 時可編輯（以 measure 為準）；唯讀時可能只有 summary（客訴讀 Excel） */
+  layer: { editable: boolean; measure: EmergencyMeasure | null; summary: string | null }
+  levelChanged: LevelShift | null
+  improvedAt: string | null
+  improvePlanned: boolean
+  improveOverdue: boolean
+  complaintCount: number
+  repairSerial: string | null
+  occurredAt: string | null
 }
 
-export type ComplaintSummary = Paged<TrackingRow> & {
-  levelCounts: { before: Record<string, number>; after: Record<string, number>; total: number }
+export type ComplaintSummary = Paged<MeasureRow> & {
+  /** 各 Level 客訴筆數（依改善後 Level）＋ total */
+  levelCounts: Record<string, number>
 }
 
-export type ProcessSummary = Paged<TrackingRow> & {
+export type ProcessSummary = Paged<MeasureRow> & {
   levelCounts: { current: Record<string, number>; total: number }
 }
 
