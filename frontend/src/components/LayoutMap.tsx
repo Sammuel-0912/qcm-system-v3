@@ -1,4 +1,4 @@
-import { HOTSPOTS, LAYOUT_ASPECT, LAYOUT_IMAGE, UNPLACED_TARGETS, type Hotspot } from '../layoutConfig'
+import { HOTSPOTS, LAYOUT_ASPECT, LAYOUT_IMAGE, type Hotspot } from '../layoutConfig'
 import { LEVEL_COLORS } from '../constants'
 
 type Props = {
@@ -18,7 +18,6 @@ function hotspotFill(hotspot: Hotspot, selected: boolean, level: number | null |
 export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = true }: Props) {
   const aspect = (LAYOUT_ASPECT.height / LAYOUT_ASPECT.width) * 100
   // 全部定位完成後，「待確認」的圖例與註腳就沒有意義，自動隱藏
-  const hasGuesses = HOTSPOTS.some((h) => h.confidence === 'guess')
 
   return (
     <div>
@@ -105,52 +104,6 @@ export function LayoutMap({ selected, onSelect, worstLevels = {}, showGuesses = 
         </svg>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-[#2b8fd6] bg-[#3899ec24]" />
-          CTP 自動站
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-[#8a8a8a] bg-[#78787824]" />
-          OP 人工站
-        </span>
-        {hasGuesses && (
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-3 w-4 rounded-sm border-[1.5px] border-dashed border-slate-400" />
-            位置待現場確認
-          </span>
-        )}
-        {UNPLACED_TARGETS.length > 0 && (
-          <span className="text-amber-700" title={UNPLACED_TARGETS.map((t) => `${t.displayName}：${t.reason}`).join('\n')}>
-            尚未放上熱區：{UNPLACED_TARGETS.map((t) => t.displayName).join('、')}，請從上方下拉選取
-          </span>
-        )}
-      </div>
-
-      <ol className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-500 sm:grid-cols-3 lg:grid-cols-4">
-        {HOTSPOTS.map((hotspot, index) => (
-          <li key={hotspot.targetId} className="flex items-baseline gap-1.5">
-            <span
-              className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${
-                selected === hotspot.targetId ? 'bg-slate-900' : 'bg-slate-400'
-              }`}
-            >
-              {index + 1}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSelect(selected === hotspot.targetId ? null : hotspot.targetId)}
-              className="text-left hover:text-slate-800 hover:underline"
-            >
-              {hotspot.displayName}
-              {hotspot.confidence === 'guess' && <span className="text-amber-600"> *</span>}
-            </button>
-          </li>
-        ))}
-      </ol>
-      {hasGuesses && (
-        <p className="mt-2 text-xs text-slate-400">* 位置依標註圖推測，需現場確認</p>
-      )}
     </div>
   )
 }

@@ -27,6 +27,7 @@ import { LevelCountBar } from '../components/LevelCountBar'
 import { LevelTallyBar } from '../components/LevelTallyBar'
 import { TrackingTable } from '../components/TrackingTable'
 import { LayoutMap } from '../components/LayoutMap'
+import { StationRiskMap } from '../components/StationRiskMap'
 import { LevelTimeline } from '../components/LevelTimeline'
 import { MultiSelect } from '../components/MultiSelect'
 import { QuadrantChart } from '../components/QuadrantChart'
@@ -401,6 +402,12 @@ export default function QualityPage() {
             selected={state.target}
             onSelect={(target) => setState((s) => ({ ...s, target }))}
             worstLevels={worstLevels}
+          />
+          <StationRiskMap
+            window={changeWindow}
+            selected={state.target}
+            onSelect={(target) => setState((s) => ({ ...s, target }))}
+            reloadKey={reloadKey}
           />
         </section>
 

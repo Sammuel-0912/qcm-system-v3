@@ -391,6 +391,13 @@ export const api = {
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '儲存失敗')
     return body as EmergencyMeasure
   },
+  stationRisk: (window: ChangeWindow) =>
+    get<{
+      window: ChangeWindow
+      since: string
+      stations: Record<string, { repairs: number; complaints: number }>
+      unmappedComplaints: number
+    }>('/station-risk', { window }),
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>

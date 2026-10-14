@@ -165,3 +165,12 @@ export const UNPLACED_TARGETS = [
   { targetId: 'equip:A0006', displayName: '軟銅排1（人工六）', reason: 'layout 位置待確認' },
   { targetId: 'equip:A0008', displayName: '鎖PWB板（人工八）', reason: 'layout 位置待確認' },
 ]
+
+/** 風險地圖的站別卡片：已放上熱區的 12 站＋尚未放上熱區的 OP 人工站，共 18 站 */
+export type RiskStation = { targetId: string; displayName: string; kind: 'CTP' | 'OP'; equipmentCode: string }
+
+export const RISK_STATIONS: RiskStation[] = [
+  ...HOTSPOTS.map((h) => ({ targetId: h.targetId, displayName: h.displayName, kind: h.kind })),
+  // 尚未放上熱區的都是 OP 人工站（A000N）
+  ...UNPLACED_TARGETS.map((t) => ({ targetId: t.targetId, displayName: t.displayName, kind: 'OP' as const })),
+].map((s) => ({ ...s, equipmentCode: s.targetId.replace(/^equip:/, '') }))

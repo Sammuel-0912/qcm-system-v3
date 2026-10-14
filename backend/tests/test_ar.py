@@ -491,3 +491,29 @@ def test_emergency_measure_classification(client):
     # 不掛批次：重新匯入後分類仍在
     _import_v3(client)
     assert current()["managementNote"] == "加強稽核頻率"
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_station_risk_counts(client):
+    import collections
+    import datetime as dt
+
+    _import_v3(client)
+    year = client.get("/api/v1/station-risk", params={"window": "year"}).json()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    since = now - dt.timedelta(days=365)
+    repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()["items"]
+    expected = collections.Counter(
+        r["equipmentCode"]
+        for r in repairs
+        if r["testedAt"] and since <= dt.datetime.fromisoformat(r["testedAt"]) <= now
+    )
+    assert {code: v["repairs"] for code, v in year["stations"].items() if v["repairs"]} == dict(expected)
+    # 只有序號 1 的客訴填了設備（OT00420118），其餘 7 筆未對應站別
+    assert year["stations"]["OT00420118"]["complaints"] == 1
+    assert year["unmappedComplaints"] == 7
+
+    day = client.get("/api/v1/station-risk", params={"window": "day"}).json()
+    assert all(v["repairs"] == 0 and v["complaints"] == 0 for v in day["stations"].values())
+    assert client.get("/api/v1/station-risk", params={"window": "decade"}).status_code == 422
