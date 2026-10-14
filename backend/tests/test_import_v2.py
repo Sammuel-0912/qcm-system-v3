@@ -375,3 +375,28 @@ def test_1011_into_empty_db_uses_default_op_mapping():
         assert {k.equipment_code for k in op} == {f"A000{i}" for i in range(1, 9)}
         codes = set(session.scalars(select(DimEquipment.equipment_code).where(DimEquipment.batch_id == batch.id)))
         assert {f"A000{i}" for i in range(1, 9)} <= codes
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_long_term_measure_column_is_imported(tmp_path):
+    """修護報表日後加上「長期措施」欄時要自動匯入（目前來源檔沒有這欄）。"""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(V3)
+    ws = wb["修護報表"]
+    header_row = next(r for r in range(1, 6) if ws.cell(r, 2).value == "月份")
+    col = 29  # AC：最後一個偵測方式欄之後的空欄
+    assert ws.cell(header_row, col).value is None
+    ws.cell(header_row, col).value = "長期措施"
+    ws.cell(header_row + 1, col).value = "導入扭力監控並納入 SOP"
+    path = tmp_path / "with_long_term.xlsx"
+    wb.save(path)
+
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        batch, _ = import_workbook(session, str(path), path.name)
+        values = set(
+            session.scalars(select(FactRepair.long_term_measure).where(FactRepair.batch_id == batch.id))
+        )
+        assert "導入扭力監控並納入 SOP" in values

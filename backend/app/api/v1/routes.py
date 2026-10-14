@@ -26,16 +26,20 @@ from ...models import (
     FactRepair,
     ImportBatch,
 )
+from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
 from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
+    CHANGE_WINDOWS,
     active_batch,
     apply_filters,
     quadrant_payload,
+    states_in_window,
     trend_payload,
+    window_bounds,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -116,11 +120,13 @@ def get_quadrant(
     line: str | None = None,
     attribute: str | None = None,
     target: str | None = None,
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
+    """象限圖。給 window 時只計入期間內有維修或客訴的 KPOV（含全廠比較基準）。"""
     _check_view(view)
     batch = _batch_or_404(session)
-    states = build_states(session, batch.id)
+    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
     payload = quadrant_payload(session, batch.id, states, station, line, view, attribute, target)
     payload["batch"] = _batch_info(batch)
     return payload
@@ -151,11 +157,13 @@ def list_kpov(
     deviated_only: bool = Query(False, alias="deviatedOnly"),
     page: int = 1,
     page_size: int = Query(100, alias="pageSize", le=500),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     _check_view(view)
     batch = _batch_or_404(session)
-    states = build_states(session, batch.id)
+    # 與象限圖同一個範圍：給 window 時只列期間內有異動的 KPOV，點象限看到的數字才對得上
+    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
 
     if level is not None:
@@ -412,7 +420,6 @@ def list_events(
     }
 
 
-CHANGE_WINDOWS = {"day": 1, "week": 7, "month": 30, "year": 365}
 CHANGE_KINDS_UI = {"escalated": "ESCALATED", "improved": "IMPROVED"}
 
 
@@ -437,6 +444,7 @@ def list_level_changes(
     states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in scoped}
+    states_by_key = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in scoped}
 
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(days=CHANGE_WINDOWS[window])
@@ -467,53 +475,33 @@ def list_level_changes(
     page = min(page, pages)
     page_items = selected[(page - 1) * page_size : page * page_size]
 
+    # 列內容以「該筆異動所屬的維修」組成，與客訴／製程追蹤同一套欄位（services/measure_rows.py）
     repair_ids = {e.repair_id for e in page_items if e.repair_id}
     repairs = (
         {r.id: r for r in session.scalars(select(FactRepair).where(FactRepair.id.in_(repair_ids)))}
         if repair_ids
         else {}
     )
-
-    # 高風險列附上使用者填的緊急措施分類（以維修序號＋KPOV＋設備定位，不隨匯入批次變動）
-    measures: dict[tuple, EmergencyMeasure] = {}
-    if kind == "escalated":
-        serials = {e.repair_serial for e in page_items if e.repair_serial}
-        if serials:
-            for m in session.scalars(select(EmergencyMeasure).where(EmergencyMeasure.repair_serial.in_(serials))):
-                measures[(m.repair_serial, m.kpov_no, m.equipment_code)] = m
+    events = events_by_repair(session, batch.id)
+    measures = measures_for(session, list(repairs.values()))
 
     items = []
     for e in page_items:
-        kpov = allowed[(e.kpov_no, e.equipment_code)]
         repair = repairs.get(e.repair_id) if e.repair_id else None
-        # 惡化列顯示對應維修單的改善措施與（預計）改善時間；改善列的改善時間就是事件生效時間
-        if e.event_type == "IMPROVE":
-            improve_at = utc(e.effective_at)
-            improvement = e.improvement or (repair.improvement if repair else None)
-        else:
-            improve_at = utc(repair.improvement_effective_at) if repair and repair.improvement_effective_at else None
-            improvement = repair.improvement if repair else None
-        items.append(
-            {
-                "kpovNo": e.kpov_no,
-                "kpovName": kpov.kpov_name,
-                "station": kpov.station,
-                "equipmentCode": e.equipment_code,
-                "effectiveAt": utc(e.effective_at).isoformat(),
-                "levelBefore": e.level_before,
-                "levelAfter": e.level_after,
-                "transition": e.transition,
-                "improvement": improvement,
-                "improvedAt": improve_at.isoformat() if improve_at else None,
-                "improvePlanned": bool(improve_at and improve_at > now),
-                "repairSerial": e.repair_serial,
-            }
+        if repair is None:
+            continue  # 事件一律來自維修紀錄；找不到代表資料不一致，略過而不是組出半套的列
+        row = repair_row(
+            repair,
+            states_by_key.get((e.kpov_no, e.equipment_code)),
+            events.get(repair.id, {}),
+            measures.get((repair.serial_no, repair.kpov_no, repair.equipment_code)),
+            # 只有高風險列可編輯措施層別；已改善列只顯示同一份分類
+            editable=kind == "escalated",
+            now=now,
         )
-        if kind == "escalated":
-            measure = measures.get((e.repair_serial, e.kpov_no, e.equipment_code))
-            items[-1]["measure"] = _measure_out(measure) if measure else None
-            # 客訴筆數：尚未定義對應規則，先固定 0（使用者指定）
-            items[-1]["complaintCount"] = 0
+        row["transition"] = e.transition
+        row["effectiveAt"] = utc(e.effective_at).isoformat()
+        items.append(row)
 
     return {
         "window": window,
@@ -536,10 +524,11 @@ def get_station_risk(
     window: str = Query("month", pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
-    """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數。
+    """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數，以及期間內最嚴重的 Level。
 
-    維修依測試時間、客訴依客訴日期落在區間內計數。客訴未填設備ID 者無法歸到任何站，
-    另計 unmappedComplaints，由前端提示。不套用上方篩選：地圖本身就是全線一覽。
+    維修依測試時間、客訴依客訴日期落在區間內計數。Level 取「發生當時」：
+    維修＝該筆的惡化事件後 Level；客訴＝改善前 Level。前端依 worstLevel 上卡片底色。
+    客訴未填設備ID 者無法歸到任何站，另計 unmappedComplaints。不套用上方篩選：地圖本身就是全線一覽。
     """
     batch = _batch_or_404(session)
     now = dt.datetime.now(dt.timezone.utc)
@@ -551,25 +540,30 @@ def get_station_risk(
         value = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
         return since <= value <= now
 
-    stations: dict[str, dict[str, int]] = {}
+    stations: dict[str, dict] = {}
 
-    def bucket(code: str) -> dict[str, int]:
-        return stations.setdefault(code, {"repairs": 0, "complaints": 0})
+    def record(code: str, kind: str, level: int | None) -> None:
+        entry = stations.setdefault(code, {"repairs": 0, "complaints": 0, "worstLevel": None})
+        entry[kind] += 1
+        if level is not None and (entry["worstLevel"] is None or level > entry["worstLevel"]):
+            entry["worstLevel"] = level
 
-    for code, tested_at in session.execute(
-        select(FactRepair.equipment_code, FactRepair.tested_at).where(FactRepair.batch_id == batch.id)
-    ):
-        if code and in_window(tested_at):
-            bucket(code)["repairs"] += 1
+    events = events_by_repair(session, batch.id)
+    for repair in session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)):
+        if repair.equipment_code and in_window(repair.tested_at):
+            degrade = events.get(repair.id, {}).get("DEGRADE")
+            record(repair.equipment_code, "repairs", degrade.level_after if degrade else None)
 
     unmapped = 0
-    for code, complained_at in session.execute(
-        select(FactComplaint.equipment_code, FactComplaint.complained_at).where(FactComplaint.batch_id == batch.id)
+    for code, complained_at, level_before in session.execute(
+        select(FactComplaint.equipment_code, FactComplaint.complained_at, FactComplaint.level_before).where(
+            FactComplaint.batch_id == batch.id
+        )
     ):
         if not in_window(complained_at):
             continue
         if code:
-            bucket(code)["complaints"] += 1
+            record(code, "complaints", level_before)
         else:
             unmapped += 1
 
@@ -590,19 +584,6 @@ class EmergencyMeasureIn(BaseModel):
     foolproof: bool = False
     smart_monitoring: bool = Field(False, alias="smartMonitoring")
     management_note: str | None = Field(None, alias="managementNote")
-
-
-def _measure_out(m: EmergencyMeasure) -> dict:
-    return {
-        "solutionType": m.solution_type,
-        "techTarget": m.tech_target,
-        "designElimination": m.design_elimination,
-        "equipmentInterception": m.equipment_interception,
-        "foolproof": m.foolproof,
-        "smartMonitoring": m.smart_monitoring,
-        "managementNote": m.management_note,
-        "updatedAt": m.updated_at.isoformat() if m.updated_at else None,
-    }
 
 
 @router.put("/emergency-measures")
@@ -666,7 +647,7 @@ def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(
             setattr(measure, key, value)
         measure.updated_at = dt.datetime.now(dt.timezone.utc)
     session.commit()
-    return _measure_out(measure)
+    return measure_out(measure)
 
 
 # --------------------------------------------------------------------------- 客訴／製程問題追蹤
@@ -687,6 +668,7 @@ def get_complaint_summary(
     target: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     """首頁：Level 3–0 客訴筆數（改善前／改善後）與客訴問題追蹤表（後端分頁）。
@@ -695,7 +677,9 @@ def get_complaint_summary(
     """
     batch = _batch_or_404(session)
     states, scoped, filtered = _scope(session, batch.id, station, line, attribute, target)
-    counts, rows = complaint_summary(session, batch.id, states, scoped if filtered else None)
+    counts, rows = complaint_summary(
+        session, batch.id, states, scoped if filtered else None, window_bounds(window)
+    )
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
 
 
@@ -707,12 +691,13 @@ def get_process_summary(
     target: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
     """首頁：製程問題追蹤（修護報表）— Level 3–0 維修筆數與追蹤表（後端分頁）。"""
     batch = _batch_or_404(session)
     _, scoped, _ = _scope(session, batch.id, station, line, attribute, target)
-    counts, rows = process_summary(session, batch.id, scoped)
+    counts, rows = process_summary(session, batch.id, scoped, window_bounds(window))
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
 
 

@@ -101,6 +101,13 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("ar_inspection", "equipment_code", "TEXT"),
     ("ar_inspection", "kpov_no", "TEXT"),
     ("ar_inspection", "check_content", "TEXT"),
+    ("fact_repair", "long_term_measure", "TEXT"),
+    ("fact_complaint", "mgmt_measure", "TEXT"),
+    ("fact_complaint", "tech_ccsc_interception", "TEXT"),
+    ("fact_complaint", "tech_kpov_design_elimination", "TEXT"),
+    ("fact_complaint", "tech_kpov_interception", "TEXT"),
+    ("fact_complaint", "tech_kpiv_foolproof", "TEXT"),
+    ("fact_complaint", "tech_kpiv_smart", "TEXT"),
 )
 
 

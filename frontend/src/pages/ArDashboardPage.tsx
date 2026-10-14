@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 
 import { arApi, type ArInspectionRow, type ArStat } from '../api/arClient'
 import { AppShell } from '../components/AppShell'
+import { AR_MARKER_ENABLED } from '../features'
 
 function rateTone(rate: number): string {
   if (rate >= 0.9) return 'border-emerald-200 bg-emerald-50'
@@ -75,12 +76,21 @@ export default function ArDashboardPage() {
 
   const actions = (
     <>
-      <Link
-        to="/ar/inspect"
-        className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
-      >
-        開始點檢
-      </Link>
+      {AR_MARKER_ENABLED ? (
+        <Link
+          to="/ar/inspect"
+          className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+        >
+          開始點檢
+        </Link>
+      ) : (
+        <Link
+          to="/ar/photo"
+          className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+        >
+          拍照點檢
+        </Link>
+      )}
       <a
         href={arApi.exportUrl()}
         className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
@@ -115,8 +125,16 @@ export default function ArDashboardPage() {
             <div className="rounded-lg border border-dashed border-slate-200 py-10 text-center">
               <p className="text-sm text-slate-500">尚無點檢紀錄</p>
               <p className="mt-1 text-xs text-slate-400">
-                先到<Link to="/ar/devices" className="mx-1 underline">設備管理</Link>
-                建立設備與 marker，再用 AR 掃描點檢
+                {AR_MARKER_ENABLED ? (
+                  <>
+                    先到<Link to="/ar/devices" className="mx-1 underline">設備管理</Link>
+                    建立設備與 marker，再用 AR 掃描點檢
+                  </>
+                ) : (
+                  <>
+                    到<Link to="/ar/photo" className="mx-1 underline">拍照點檢</Link>上傳照片即可記錄點檢
+                  </>
+                )}
               </p>
             </div>
           ) : (

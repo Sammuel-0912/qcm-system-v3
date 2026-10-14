@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 
 import type { CheckMonitorResponse, CheckMonitorRow, CheckSlot, SlotState } from '../api/client'
 import { PhotoCheckButton } from './PhotoCheckButton'
+import { AR_MARKER_ENABLED } from '../features'
 
 type Props = {
   data: CheckMonitorResponse | null
@@ -180,10 +181,14 @@ export function CheckMonitorTable({ data, scopeLabel, onChanged }: Props) {
         <Link to="/ar/photo" className="underline hover:text-slate-600">
           拍照點檢
         </Link>
-        與{' '}
-        <Link to="/ar/inspect" className="underline hover:text-slate-600">
-          AR 點檢
-        </Link>
+        {AR_MARKER_ENABLED && (
+          <>
+            與{' '}
+            <Link to="/ar/inspect" className="underline hover:text-slate-600">
+              AR 點檢
+            </Link>
+          </>
+        )}
         ，每分鐘自動更新。
       </p>
     </div>
