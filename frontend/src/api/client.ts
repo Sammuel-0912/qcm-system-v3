@@ -390,7 +390,8 @@ export const api = {
     get<{
       window: ChangeWindow
       since: string
-      stations: Record<string, { repairs: number; complaints: number }>
+      /** worstLevel：期間內維修／客訴發生當時最嚴重的 Level（無則 null） */
+      stations: Record<string, { repairs: number; complaints: number; worstLevel: number | null }>
       unmappedComplaints: number
     }>('/station-risk', { window }),
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>

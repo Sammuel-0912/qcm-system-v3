@@ -539,6 +539,22 @@ def test_station_risk_counts(client):
     # 只有序號 1 的客訴填了設備（OT00420118），其餘 7 筆未對應站別
     assert year["stations"]["OT00420118"]["complaints"] == 1
     assert year["unmappedComplaints"] == 7
+    # 最嚴重 Level：OT00420118 有序號 1 的客訴（改善前 Level 3）-> 3
+    assert year["stations"]["OT00420118"]["worstLevel"] == 3
+    # 只有維修的站：worstLevel 為該站各筆維修惡化事件後 Level 的最大值
+    history_levels = {}
+    for r in repairs:
+        if r["testedAt"] and since <= dt.datetime.fromisoformat(r["testedAt"]) <= now:
+            res = client.get(f"/api/v1/kpov/{r['kpovNo']}/{r['equipmentCode']}/history")
+            if res.status_code == 404:
+                continue  # KPOV 庫沒有這個 KPOV×設備（例：鎖後蓋 K00051），沒有等級事件
+            for e in res.json()["events"]:
+                if e["repairSerial"] == r["serialNo"] and e["type"] == "DEGRADE":
+                    code = r["equipmentCode"]
+                    history_levels[code] = max(history_levels.get(code, -1), e["levelAfter"])
+    for code, level in history_levels.items():
+        if not year["stations"][code]["complaints"]:
+            assert year["stations"][code]["worstLevel"] == level, code
 
     day = client.get("/api/v1/station-risk", params={"window": "day"}).json()
     assert all(v["repairs"] == 0 and v["complaints"] == 0 for v in day["stations"].values())

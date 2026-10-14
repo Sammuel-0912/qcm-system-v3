@@ -524,10 +524,11 @@ def get_station_risk(
     window: str = Query("month", pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
-    """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數。
+    """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數，以及期間內最嚴重的 Level。
 
-    維修依測試時間、客訴依客訴日期落在區間內計數。客訴未填設備ID 者無法歸到任何站，
-    另計 unmappedComplaints，由前端提示。不套用上方篩選：地圖本身就是全線一覽。
+    維修依測試時間、客訴依客訴日期落在區間內計數。Level 取「發生當時」：
+    維修＝該筆的惡化事件後 Level；客訴＝改善前 Level。前端依 worstLevel 上卡片底色。
+    客訴未填設備ID 者無法歸到任何站，另計 unmappedComplaints。不套用上方篩選：地圖本身就是全線一覽。
     """
     batch = _batch_or_404(session)
     now = dt.datetime.now(dt.timezone.utc)
@@ -539,25 +540,30 @@ def get_station_risk(
         value = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
         return since <= value <= now
 
-    stations: dict[str, dict[str, int]] = {}
+    stations: dict[str, dict] = {}
 
-    def bucket(code: str) -> dict[str, int]:
-        return stations.setdefault(code, {"repairs": 0, "complaints": 0})
+    def record(code: str, kind: str, level: int | None) -> None:
+        entry = stations.setdefault(code, {"repairs": 0, "complaints": 0, "worstLevel": None})
+        entry[kind] += 1
+        if level is not None and (entry["worstLevel"] is None or level > entry["worstLevel"]):
+            entry["worstLevel"] = level
 
-    for code, tested_at in session.execute(
-        select(FactRepair.equipment_code, FactRepair.tested_at).where(FactRepair.batch_id == batch.id)
-    ):
-        if code and in_window(tested_at):
-            bucket(code)["repairs"] += 1
+    events = events_by_repair(session, batch.id)
+    for repair in session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)):
+        if repair.equipment_code and in_window(repair.tested_at):
+            degrade = events.get(repair.id, {}).get("DEGRADE")
+            record(repair.equipment_code, "repairs", degrade.level_after if degrade else None)
 
     unmapped = 0
-    for code, complained_at in session.execute(
-        select(FactComplaint.equipment_code, FactComplaint.complained_at).where(FactComplaint.batch_id == batch.id)
+    for code, complained_at, level_before in session.execute(
+        select(FactComplaint.equipment_code, FactComplaint.complained_at, FactComplaint.level_before).where(
+            FactComplaint.batch_id == batch.id
+        )
     ):
         if not in_window(complained_at):
             continue
         if code:
-            bucket(code)["complaints"] += 1
+            record(code, "complaints", level_before)
         else:
             unmapped += 1
 

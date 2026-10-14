@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { api, type ChangeWindow } from '../api/client'
+import { LEVEL_COLORS } from '../constants'
 import { RISK_STATIONS } from '../layoutConfig'
 
 type Props = {
@@ -22,7 +23,8 @@ const WINDOW_HINT: Record<ChangeWindow, string> = {
 type Risk = Awaited<ReturnType<typeof api.stationRisk>>
 
 /**
- * 站別風險地圖：每站一張卡片，期間內有維修或客訴＝紅，都沒有＝綠。
+ * 站別風險地圖：每站一張卡片，底色依期間內維修／客訴「發生當時」最嚴重的 Level，
+ * 與象限圖同一套 Level 顏色（Level 3＝高風險）；期間內都沒有＝Level 0 的綠色。
  * 點卡片等同點 Layout 熱區（下方趨勢與點檢表切到該站），再點取消。
  */
 export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props) {
@@ -52,20 +54,14 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props)
             另有 {risk.unmappedComplaints} 筆客訴未對應站別
           </Link>
         )}
-        <span className="ml-auto flex items-center gap-3 text-xs text-slate-500">
-          <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-red-500" />有維修或客訴
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />無預警
-          </span>
-        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {RISK_STATIONS.map((station) => {
-          const counts = risk?.stations[station.equipmentCode] ?? { repairs: 0, complaints: 0 }
-          const red = counts.repairs > 0 || counts.complaints > 0
+          const counts = risk?.stations[station.equipmentCode] ?? { repairs: 0, complaints: 0, worstLevel: null }
+          const alert = counts.repairs > 0 || counts.complaints > 0
+          // 有事件但算不出 Level（例：維修的 KPOV 不在 KPOV 庫）時不上色，避免誤判為無風險
+          const level = alert ? counts.worstLevel : 0
           const active = selected === station.targetId
           return (
             <button
@@ -73,11 +69,11 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props)
               type="button"
               onClick={() => onSelect(active ? null : station.targetId)}
               aria-pressed={active}
-              className={`relative overflow-hidden rounded-lg border bg-white p-3 pt-4 text-left transition hover:shadow-md ${
-                active ? 'border-slate-900 ring-2 ring-slate-900' : 'border-slate-200'
+              className={`rounded-lg border p-3 text-left transition hover:shadow-md ${
+                active ? 'border-slate-900 ring-2 ring-slate-900' : 'border-black/10'
               }`}
+              style={{ backgroundColor: level !== null ? LEVEL_COLORS[level] : '#FFFFFF' }}
             >
-              <span className={`absolute inset-x-0 top-0 h-1 ${red ? 'bg-red-500' : 'bg-emerald-500'}`} />
               <span className="flex items-center justify-between gap-2">
                 <span
                   className={`rounded px-1.5 text-[10px] font-semibold ${
@@ -86,27 +82,26 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props)
                 >
                   {station.kind}
                 </span>
-                <span
-                  className={`h-2.5 w-2.5 rounded-full ${red ? 'bg-red-500' : 'bg-emerald-500'}`}
-                  aria-label={red ? '有預警' : '無預警'}
-                />
+                <span className="text-[11px] font-semibold text-slate-700">
+                  {!alert ? '' : level === 3 ? '高風險・L3' : level !== null ? `L${level}` : 'Level 未知'}
+                </span>
               </span>
               <span className="mt-1.5 block text-sm font-semibold leading-snug text-slate-900">
                 {station.displayName}
               </span>
               <span className="mt-2 flex flex-wrap gap-1">
                 {counts.repairs > 0 && (
-                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 ring-1 ring-inset ring-red-200">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-800 ring-1 ring-inset ring-black/10">
                     維修 {counts.repairs}
                   </span>
                 )}
                 {counts.complaints > 0 && (
-                  <span className="rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-800 ring-1 ring-inset ring-black/10">
                     客訴 {counts.complaints}
                   </span>
                 )}
-                {!red && (
-                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                {!alert && (
+                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[11px] font-medium text-emerald-800 ring-1 ring-inset ring-black/5">
                     無預警
                   </span>
                 )}
