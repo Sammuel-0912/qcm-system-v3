@@ -22,6 +22,10 @@ type Props = {
   scope: LevelCounts
   plant: LevelCounts
   baseline: LevelCounts
+  /** 期初（期間第一天）的 Level 分佈；有給時左邊數字用它，否則用 baseline */
+  start?: LevelCounts | null
+  /** 期初的說明，例：近 30 天 */
+  startLabel?: string
   filtered: boolean
   view: string
   onSelect: (level: number) => void
@@ -31,8 +35,10 @@ function countOf(counts: LevelCounts, level: number): number {
   return counts[`level${level}` as keyof LevelCounts] as number
 }
 
-export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect }: Props) {
+export function QuadrantChart({ scope, plant, baseline, start, startLabel, filtered, view, onSelect }: Props) {
   const rated = scope.total - scope.unrated
+  const from = start ?? baseline
+  const fromLabel = start ? `期初（${startLabel ?? '期間'}的第一天）` : '原始 Level'
 
   return (
     <svg
@@ -48,7 +54,7 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
         const rect = RECTS[level]
         const count = countOf(scope, level)
         const plantCount = countOf(plant, level)
-        const baseCount = countOf(baseline, level)
+        const baseCount = countOf(from, level)
         const pct = rated > 0 ? Math.round((count / rated) * 1000) / 10 : 0
         const delta = view === 'baseline' ? 0 : count - baseCount
         const cx = rect.x + W / 2
@@ -69,7 +75,7 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
             aria-label={
               view === 'baseline'
                 ? `Level ${level}，${count} 項 KPOV`
-                : `Level ${level}，原始 ${baseCount} 項，變化後 ${count} 項 KPOV`
+                : `Level ${level}，${fromLabel} ${baseCount} 項，現在 ${count} 項 KPOV`
             }
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') onSelect(level)
@@ -93,7 +99,7 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
               {text.bigY}
             </text>
 
-            {/* 原始 Level（灰）→ 變化後（黑）；口徑固定為原始時只畫一個數字 */}
+            {/* 期初（灰）→ 現在（黑）；口徑固定為原始時只畫一個數字 */}
             <text x={cx} y={rect.y + 92} fontSize="40" fontWeight="bold" fill="#111" textAnchor="middle">
               {view === 'baseline' ? (
                 count
@@ -144,8 +150,8 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
 
       {view !== 'baseline' && (
         <text x="350" y="30" fontSize="12" fill="#666" textAnchor="middle">
-          每格數字：<tspan fill="#777" fontWeight="bold">原始 Level</tspan> →{' '}
-          <tspan fill="#111" fontWeight="bold">維修／客訴改善後</tspan>（KPOV 數）
+          每格數字：<tspan fill="#777" fontWeight="bold">{fromLabel}</tspan> →{' '}
+          <tspan fill="#111" fontWeight="bold">現在</tspan>（KPOV 數，共 {scope.total}）
         </text>
       )}
 

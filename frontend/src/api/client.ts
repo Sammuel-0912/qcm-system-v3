@@ -23,6 +23,8 @@ export type QuadrantResponse = {
   scope: LevelCounts
   plant: LevelCounts
   baseline: LevelCounts
+  /** 期間第一天當時的 Level 分佈（同一組 KPOV）；未給期間時為 null */
+  start: LevelCounts | null
   filtered: boolean
   deviationCount: number
   lineInheritance: LineInheritance

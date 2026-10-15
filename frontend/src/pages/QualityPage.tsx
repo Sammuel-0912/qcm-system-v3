@@ -31,7 +31,7 @@ import { TrendChart } from '../components/TrendChart'
 
 const ATTRIBUTE_LABELS: Record<string, string> = { CTP: 'CTP 自動站', OP: 'OP 人工站' }
 
-// 天／週／月／年＝近 1／7／30／365 天：影響象限圖（只算期間內有維修或客訴的 KPOV）、
+// 天／週／月／年＝近 1／7／30／365 天：影響象限圖（全部 KPOV，期初 → 現在）、
 // 客訴／製程柱狀圖、等級異動總覽與站別風險地圖
 const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
   { value: 'day', label: '天', hint: '近 1 天' },
@@ -41,8 +41,8 @@ const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
 ]
 const DEFAULT_WINDOW: ChangeWindow = 'month'
 
-// 象限圖每格同時顯示「原始 Level（KPOV 數據庫）→ 套用維修／客訴改善後」的 KPOV 數；
-// 點格子開的 Level 明細依變化後 Level。不提供口徑切換。
+// 象限圖每格顯示全部 KPOV 的「期初（期間第一天）→ 現在」Level 個數；
+// 點格子開的 Level 明細依現在的 Level 列出全部 KPOV。不提供口徑切換。
 const VIEW = 'current'
 
 // 篩選與 layout 選取全部同步到 URL（spec.md REQ-UI-09）
@@ -214,11 +214,10 @@ export default function QualityPage() {
         ...scope,
         level: String(selectedLevel),
         deviatedOnly: state.deviatedOnly ? '1' : undefined,
-        window: changeWindow,
       })
       .then(setKpovList)
       .catch(() => setKpovList(null))
-  }, [selectedLevel, state.deviatedOnly, state.target, station, line, attribute, changeWindow])
+  }, [selectedLevel, state.deviatedOnly, state.target, station, line, attribute])
 
   const worstLevels = useMemo(() => {
     const map: Record<string, number | null> = {}
@@ -357,6 +356,8 @@ export default function QualityPage() {
                   scope={quadrant.scope}
                   plant={quadrant.plant}
                   baseline={quadrant.baseline}
+                  start={quadrant.start}
+                  startLabel={windowHint}
                   filtered={quadrant.filtered}
                   view={quadrant.view}
                   onSelect={setSelectedLevel}
@@ -366,7 +367,7 @@ export default function QualityPage() {
                 <LevelCountBar
                   counts={quadrant.scope}
                   onSelect={setSelectedLevel}
-                  caption={`${WINDOWS.find((w) => w.value === changeWindow)?.hint}有維修或客訴的 KPOV`}
+                  caption="全部 KPOV・現在 Level"
                 />
               )}
 
