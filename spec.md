@@ -662,7 +662,7 @@ KPOV 明細（分頁）。每列含 `levelBaseline`、`levelCurrent`、`lastEven
 | 後端 | Python 3.12 + FastAPI + Pydantic | 與 openpyxl 同生態，Excel 處理最順 |
 | ORM | SQLAlchemy 2.0 | 欄位增補以 `app/migrations.py` 的 `ADDED_COLUMNS` 於啟動時補上（v1.4） |
 | DB | 開發：SQLite；正式：PostgreSQL | 現況等級改在應用層推算（§5.4），兩者行為一致 |
-| 部署 | Zeabur（`main` 分支，見 `DEPLOY.zeabur.md`） | v1.4 實際部署方式 |
+| 部署 | Linux VM：Docker Compose（`DEPLOY.vm.md`）；雲端：Zeabur（`DEPLOY.zeabur.md`） | 見 §10.3 |
 
 測試一律使用暫存資料庫（`backend/tests/conftest.py` 在收集測試前設定 `QCM_DATABASE_URL`），
 不得連到開發用的 `backend/data/qcm.db`。
@@ -702,6 +702,15 @@ QualityControlModeling/
     │   └── constants.ts         # LEVEL_COLORS / LEVEL_SEVERITY 單一來源
     └── ...
 ```
+
+### 10.3 部署（REQ-DEP-01 ~ 06）
+
+- **REQ-DEP-01** 三個容器：`db`（postgres:16-alpine）、`api`（`backend/Dockerfile`）、`web`（`frontend/Dockerfile`，nginx 提供靜態頁並把 `/api/` 反向代理到 `api`）。只有 `web` 對外開 port（`WEB_PORT`，預設 8080）。
+- **REQ-DEP-02** 設定集中在 `.env`（範本 `.env.example`，不進版控）；`POSTGRES_PASSWORD` 必填，未設定時 compose 直接報錯。
+- **REQ-DEP-03** 資料持久化：資料庫在 volume `pgdata`；拍照點檢照片與 AR 圖檔在 `apidata`（`QCM_DATA_DIR=/app/data`）。
+- **REQ-DEP-04** 三個服務皆 `restart: unless-stopped` 並有健康檢查（db：`pg_isready`；api：`/health`；web：首頁），依序等待前一個 healthy 才啟動。
+- **REQ-DEP-05** `api` 以非 root（uid 10001）執行，且只能單一程序（線上人數存在程序記憶體）。
+- **REQ-DEP-06** VM 不能連外網時，以 `docker save` 打包 `qcm-api`、`qcm-web`、`postgres:16-alpine` 成 `qcm-images.tar.gz`，VM 上 `docker load` 後 `docker compose up -d --no-build`，不需原始碼（步驟見 `DEPLOY.vm.md`）。
 
 ### 10.2 開發順序
 1. DB schema + Alembic migration
