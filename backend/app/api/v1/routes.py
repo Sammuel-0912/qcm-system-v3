@@ -27,6 +27,7 @@ from ...models import (
     ImportBatch,
 )
 from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
+from ...services.station_levels import event_levels, kpov_levels
 from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
@@ -37,7 +38,6 @@ from ...services.query import (
     active_batch,
     apply_filters,
     quadrant_payload,
-    states_in_window,
     trend_payload,
     window_bounds,
 )
@@ -123,11 +123,15 @@ def get_quadrant(
     window: str | None = Query(None, pattern="^(day|week|month|year)$"),
     session: Session = Depends(get_session),
 ):
-    """象限圖。給 window 時只計入期間內有維修或客訴的 KPOV（含全廠比較基準）。"""
+    """象限圖。母體一律為全部 KPOV；給 window 時另回 start＝期間第一天當時的 Level 分佈（期初 → 現在）。"""
     _check_view(view)
     batch = _batch_or_404(session)
-    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
-    payload = quadrant_payload(session, batch.id, states, station, line, view, attribute, target)
+    states = build_states(session, batch.id)
+    bounds = window_bounds(window)
+    start_states = build_states(session, batch.id, as_of=bounds[0]) if bounds else None
+    payload = quadrant_payload(
+        session, batch.id, states, station, line, view, attribute, target, start_states=start_states
+    )
     payload["batch"] = _batch_info(batch)
     return payload
 
@@ -162,8 +166,8 @@ def list_kpov(
 ):
     _check_view(view)
     batch = _batch_or_404(session)
-    # 與象限圖同一個範圍：給 window 時只列期間內有異動的 KPOV，點象限看到的數字才對得上
-    states = states_in_window(session, batch.id, build_states(session, batch.id), window)
+    # 與象限圖同一個母體（全部 KPOV）；window 已不影響明細，保留參數只為相容舊連結
+    states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
 
     if level is not None:
@@ -568,6 +572,27 @@ def get_station_risk(
             unmapped += 1
 
     return {"window": window, "since": since.isoformat(), "stations": stations, "unmappedComplaints": unmapped}
+
+
+@router.get("/station-levels/kpov")
+def get_station_kpov_levels(session: Session = Depends(get_session)):
+    """站別柱狀圖（layout 下方）：各站 KPOV 個數，依 KPOV 數據庫原始 Level。全線一覽，不套用篩選與期間。"""
+    batch = _batch_or_404(session)
+    return kpov_levels(session, batch.id)
+
+
+@router.get("/station-levels/events")
+def get_station_event_levels(
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """客訴／製程柱狀圖：期間內各站的客訴與維修筆數，依發生當時的 Level 分色；套用上方篩選。"""
+    batch = _batch_or_404(session)
+    scoped, _ = apply_filters(session, batch.id, build_states(session, batch.id), station, line, attribute)
+    return event_levels(session, batch.id, window, scoped)
 
 
 # --------------------------------------------------------------------------- 緊急措施分類

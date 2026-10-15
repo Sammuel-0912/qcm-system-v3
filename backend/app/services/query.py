@@ -6,7 +6,7 @@ import datetime as dt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import DimEquipment, FactComplaint, FactRepair, ImportBatch
+from ..models import DimEquipment, ImportBatch
 from .lifecycle import KpovState, build_states, summarize
 
 
@@ -29,35 +29,6 @@ def in_bounds(value: dt.datetime | None, bounds: tuple[dt.datetime, dt.datetime]
         return False
     value = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
     return bounds[0] <= value <= bounds[1]
-
-
-def active_kpov_keys(session: Session, batch_id: int, bounds: tuple[dt.datetime, dt.datetime]) -> set[tuple]:
-    """期間內有維修（依測試時間）或客訴（依客訴日期，需已對應設備＋KPOV）的（KPOV 編號, 設備代碼）。"""
-    keys: set[tuple] = set()
-    for kpov_no, code, at in session.execute(
-        select(FactRepair.kpov_no, FactRepair.equipment_code, FactRepair.tested_at).where(
-            FactRepair.batch_id == batch_id
-        )
-    ):
-        if in_bounds(at, bounds):
-            keys.add((kpov_no, code))
-    for kpov_no, code, at in session.execute(
-        select(FactComplaint.kpov_no, FactComplaint.equipment_code, FactComplaint.complained_at).where(
-            FactComplaint.batch_id == batch_id
-        )
-    ):
-        if kpov_no and code and in_bounds(at, bounds):
-            keys.add((kpov_no, code))
-    return keys
-
-
-def states_in_window(session: Session, batch_id: int, states: list[KpovState], window: str | None) -> list[KpovState]:
-    """象限圖與 Level 明細：只留期間內有異動（維修或客訴）的 KPOV；window 為 None 時不篩。"""
-    bounds = window_bounds(window)
-    if bounds is None:
-        return states
-    keys = active_kpov_keys(session, batch_id, bounds)
-    return [s for s in states if (s.kpov.kpov_no, s.kpov.equipment_code) in keys]
 
 
 def active_batch(session: Session) -> ImportBatch | None:
@@ -188,8 +159,15 @@ def quadrant_payload(
     view: str,
     attribute: str | None = None,
     target: str | None = None,
+    start_states: list[KpovState] | None = None,
 ) -> dict:
+    """象限圖。start_states 為期間第一天當時的狀態（build_states 的 as_of），
+    有給時另回 start：同一組 KPOV 在期初的 Level 分佈，與 scope（現在）相減即期間內的淨變化。"""
     scoped, meta = apply_filters(session, batch_id, all_states, station, line, attribute, target)
+    start = None
+    if start_states is not None:
+        start_scoped, _ = apply_filters(session, batch_id, start_states, station, line, attribute, target)
+        start = summarize(start_scoped, "current")
     # 全廠基準沿用同一個屬性範圍，否則 CTP/OP 切換時比較基準會跳動
     plant, _ = apply_filters(session, batch_id, all_states, None, None, attribute, None)
     filtered = bool(_split(station) or _split(line) or target)
@@ -199,6 +177,7 @@ def quadrant_payload(
         "scope": summarize(scoped, view),
         "plant": summarize(plant, view),
         "baseline": summarize(scoped, "baseline"),
+        "start": start,
         "filtered": filtered,
         "deviationCount": deviation,
         "lineInheritance": meta,

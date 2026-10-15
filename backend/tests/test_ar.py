@@ -562,8 +562,44 @@ def test_station_risk_counts(client):
 
 
 @pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_station_level_charts(client):
+    """站別柱狀圖：KPOV 原始 Level 分佈；期間內客訴／維修筆數依發生當時 Level，與風險地圖一致。"""
+    _import_v3(client)
+
+    kpov = client.get("/api/v1/station-levels/kpov").json()
+    codes = [s["equipmentCode"] for s in kpov["stations"]]
+    assert len(codes) == len(set(codes)) == 18
+    assert codes[0] == "OT00400010"  # 依 KPOV 數據庫列序（製程順序）
+    # 與象限圖的基準口徑同一個母體
+    baseline = client.get("/api/v1/quadrant", params={"view": "baseline"}).json()["scope"]
+    for level in range(4):
+        assert sum(s["counts"][str(level)] for s in kpov["stations"]) == baseline[f"level{level}"]
+
+    events = client.get("/api/v1/station-levels/events", params={"window": "year"}).json()
+    risk = client.get("/api/v1/station-risk", params={"window": "year"}).json()
+    by_code = {s["equipmentCode"]: s for s in events["stations"]}
+    for code, r in risk["stations"].items():
+        if code not in by_code:
+            continue
+        drawn = sum(by_code[code]["repairs"].values())
+        assert drawn <= r["repairs"]
+    total_repairs = sum(sum(s["repairs"].values()) for s in events["stations"])
+    assert total_repairs + events["unknownLevel"]["repairs"] == sum(r["repairs"] for r in risk["stations"].values())
+    # 序號 1 的客訴：OT00420118、改善前 Level 3
+    assert by_code["OT00420118"]["complaints"]["3"] == 1
+    assert events["unmappedComplaints"] == 7
+
+    # 篩選：只看 OP 站時不會出現 CTP 設備
+    op = client.get("/api/v1/station-levels/events", params={"window": "year", "attribute": "OP"}).json()
+    assert op["stations"] and all(s["equipmentCode"].startswith("A") for s in op["stations"])
+    day = client.get("/api/v1/station-levels/events", params={"window": "day"}).json()
+    assert all(not any(s["repairs"].values()) for s in day["stations"])
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
 def test_window_filters_quadrant_and_tracking(client):
-    """期間篩選連動：象限圖只算期間內有維修或客訴的 KPOV；客訴、製程追蹤依日期篩選。"""
+    """期間篩選連動：象限圖母體為全部 KPOV，start＝期間第一天當時的分佈；客訴、製程追蹤依日期篩選。"""
+    import collections
     import datetime as dt
 
     _import_v3(client)
@@ -573,26 +609,40 @@ def test_window_filters_quadrant_and_tracking(client):
         parsed = dt.datetime.fromisoformat(value)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
-    full = client.get("/api/v1/quadrant").json()["scope"]
-    year = client.get("/api/v1/quadrant", params={"window": "year"}).json()["scope"]
-    day = client.get("/api/v1/quadrant", params={"window": "day"}).json()["scope"]
-    assert full["total"] == 331
-    assert 0 < year["total"] < full["total"]
-    assert day["total"] == 0
+    full = client.get("/api/v1/quadrant").json()
+    assert full["scope"]["total"] == 331
+    assert full["start"] is None
 
-    # 象限圖的 KPOV 範圍＝期間內有維修（測試時間）或已對應客訴（客訴日期）的 KPOV
-    since = now - dt.timedelta(days=365)
+    # 有等級事件的 KPOV：以 history 逐筆推算「某時點」的 Level，作為期初分佈的獨立對照
     repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()["items"]
-    complaints = client.get("/api/v1/complaints", params={"pageSize": 50}).json()["items"]
-    keys = {(r["kpovNo"], r["equipmentCode"]) for r in repairs if r["testedAt"] and since <= at(r["testedAt"])}
-    keys |= {
-        (c["kpovNo"], c["equipmentCode"])
-        for c in complaints
-        if c["kpovNo"] and c["equipmentCode"] and c["complainedAt"] and since <= at(c["complainedAt"])
-    }
-    kpov_year = client.get("/api/v1/kpov", params={"window": "year", "pageSize": 500}).json()
-    assert {(i["kpovNo"], i["equipmentCode"]) for i in kpov_year["items"]} <= keys
-    assert kpov_year["total"] == year["total"]
+    histories = []
+    for key in {(r["kpovNo"], r["equipmentCode"]) for r in repairs if r["kpovNo"] and r["equipmentCode"]}:
+        res = client.get(f"/api/v1/kpov/{key[0]}/{key[1]}/history")
+        if res.status_code == 200 and res.json()["events"]:
+            histories.append(res.json())
+
+    def level_at(history, when):
+        level = history["baseline"]["level"]
+        for e in history["events"]:
+            if at(e["effectiveAt"]) <= when:
+                level = e["levelAfter"]
+        return level
+
+    for window, days in (("day", 1), ("week", 7), ("month", 30), ("year", 365)):
+        q = client.get("/api/v1/quadrant", params={"window": window}).json()
+        # 母體固定：現在與期初都是全部 KPOV
+        assert q["scope"] == full["scope"], window
+        assert q["start"]["total"] == 331, window
+        since = now - dt.timedelta(days=days)
+        expected = collections.Counter({f"level{i}": full["baseline"][f"level{i}"] for i in range(4)})
+        for h in histories:
+            expected[f"level{h['baseline']['level']}"] -= 1
+            expected[f"level{level_at(h, since)}"] += 1
+        assert {f"level{i}": q["start"][f"level{i}"] for i in range(4)} == dict(expected), window
+
+    # Level 明細與象限圖同一母體：帶不帶 window 都是全部 KPOV
+    assert client.get("/api/v1/kpov", params={"pageSize": 500}).json()["total"] == 331
+    assert client.get("/api/v1/kpov", params={"window": "day", "pageSize": 500}).json()["total"] == 331
 
     # 客訴、製程追蹤依日期篩選
     c_all = client.get("/api/v1/complaints/summary").json()
