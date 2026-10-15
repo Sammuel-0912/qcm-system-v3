@@ -66,7 +66,11 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
             style={{ cursor: 'pointer' }}
             tabIndex={0}
             role="button"
-            aria-label={`Level ${level}，${count} 項 KPOV`}
+            aria-label={
+              view === 'baseline'
+                ? `Level ${level}，${count} 項 KPOV`
+                : `Level ${level}，原始 ${baseCount} 項，變化後 ${count} 項 KPOV`
+            }
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') onSelect(level)
             }}
@@ -89,17 +93,29 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
               {text.bigY}
             </text>
 
-            <text
-              x={cx}
-              y={rect.y + 92}
-              fontSize="40"
-              fontWeight="bold"
-              fill="#111"
-              textAnchor="middle"
-            >
-              {count}
+            {/* 原始 Level（灰）→ 變化後（黑）；口徑固定為原始時只畫一個數字 */}
+            <text x={cx} y={rect.y + 92} fontSize="40" fontWeight="bold" fill="#111" textAnchor="middle">
+              {view === 'baseline' ? (
+                count
+              ) : (
+                <>
+                  <tspan fill="#777">{baseCount}</tspan>
+                  <tspan fontSize="26" fontWeight="normal" fill="#777" dx="6" dy="-4">
+                    →
+                  </tspan>
+                  <tspan dx="6" dy="4">
+                    {count}
+                  </tspan>
+                </>
+              )}
             </text>
             <text x={cx} y={rect.y + 113} fontSize="12" fill="#444" textAnchor="middle">
+              {view !== 'baseline' && (
+                <tspan fill={badgeColor} fontWeight="bold">
+                  {delta > 0 ? `▲+${delta}` : delta < 0 ? `▼${delta}` : '持平'}
+                  {'　'}
+                </tspan>
+              )}
               {pct}%
             </text>
 
@@ -109,18 +125,6 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
               </text>
             )}
 
-            {delta !== 0 && (
-              <text
-                x={rect.x + W - 10}
-                y={rect.y + 18}
-                fontSize="12"
-                fontWeight="bold"
-                fill={badgeColor}
-                textAnchor="end"
-              >
-                {delta > 0 ? `▲+${delta}` : `▼${delta}`}
-              </text>
-            )}
           </g>
         )
       })}
@@ -137,6 +141,13 @@ export function QuadrantChart({ scope, plant, baseline, filtered, view, onSelect
           Level {level}
         </text>
       ))}
+
+      {view !== 'baseline' && (
+        <text x="350" y="30" fontSize="12" fill="#666" textAnchor="middle">
+          每格數字：<tspan fill="#777" fontWeight="bold">原始 Level</tspan> →{' '}
+          <tspan fill="#111" fontWeight="bold">維修／客訴改善後</tspan>（KPOV 數）
+        </text>
+      )}
 
       {/* 縱軸：大Y 偵測度 */}
       <line x1="360" y1="410" x2="360" y2="70" stroke="#333" strokeWidth="2" />

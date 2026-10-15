@@ -108,6 +108,11 @@ export type EventsResponse = {
 }
 
 export type ChangeWindow = 'day' | 'week' | 'month' | 'year'
+
+/** 站別柱狀圖：設備代碼＋站別名稱；同名站可能是不同設備 */
+export type StationRef = { equipmentCode: string; station: string }
+/** 依 Level 的筆數，鍵為 '0'～'3' */
+export type StationLevelCounts = Record<string, number>
 export type ChangeKind = 'escalated' | 'improved'
 
 /** 高風險異動的緊急措施分類：技術解（KPOV／KPIV）或管理解，二選一 */
@@ -394,6 +399,17 @@ export const api = {
       stations: Record<string, { repairs: number; complaints: number; worstLevel: number | null }>
       unmappedComplaints: number
     }>('/station-risk', { window }),
+  /** 各站 KPOV 個數（KPOV 數據庫原始 Level），站別依製程順序 */
+  stationKpovLevels: () =>
+    get<{ stations: (StationRef & { counts: StationLevelCounts })[]; unrated: number }>('/station-levels/kpov'),
+  /** 期間內各站客訴／維修筆數，依發生當時的 Level */
+  stationEventLevels: (p: Scope & { window: ChangeWindow }) =>
+    get<{
+      window: ChangeWindow
+      stations: (StationRef & { complaints: StationLevelCounts; repairs: StationLevelCounts })[]
+      unmappedComplaints: number
+      unknownLevel: { complaints: number; repairs: number }
+    }>('/station-levels/events', p),
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),
   checkItems: (station?: string) =>

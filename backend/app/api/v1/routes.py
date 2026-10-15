@@ -27,6 +27,7 @@ from ...models import (
     ImportBatch,
 )
 from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
+from ...services.station_levels import event_levels, kpov_levels
 from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
 from ...services import presence
@@ -568,6 +569,27 @@ def get_station_risk(
             unmapped += 1
 
     return {"window": window, "since": since.isoformat(), "stations": stations, "unmappedComplaints": unmapped}
+
+
+@router.get("/station-levels/kpov")
+def get_station_kpov_levels(session: Session = Depends(get_session)):
+    """站別柱狀圖（layout 下方）：各站 KPOV 個數，依 KPOV 數據庫原始 Level。全線一覽，不套用篩選與期間。"""
+    batch = _batch_or_404(session)
+    return kpov_levels(session, batch.id)
+
+
+@router.get("/station-levels/events")
+def get_station_event_levels(
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    station: str | None = None,
+    line: str | None = None,
+    attribute: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """客訴／製程柱狀圖：期間內各站的客訴與維修筆數，依發生當時的 Level 分色；套用上方篩選。"""
+    batch = _batch_or_404(session)
+    scoped, _ = apply_filters(session, batch.id, build_states(session, batch.id), station, line, attribute)
+    return event_levels(session, batch.id, window, scoped)
 
 
 # --------------------------------------------------------------------------- 緊急措施分類

@@ -562,6 +562,41 @@ def test_station_risk_counts(client):
 
 
 @pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+def test_station_level_charts(client):
+    """站別柱狀圖：KPOV 原始 Level 分佈；期間內客訴／維修筆數依發生當時 Level，與風險地圖一致。"""
+    _import_v3(client)
+
+    kpov = client.get("/api/v1/station-levels/kpov").json()
+    codes = [s["equipmentCode"] for s in kpov["stations"]]
+    assert len(codes) == len(set(codes)) == 18
+    assert codes[0] == "OT00400010"  # 依 KPOV 數據庫列序（製程順序）
+    # 與象限圖的基準口徑同一個母體
+    baseline = client.get("/api/v1/quadrant", params={"view": "baseline"}).json()["scope"]
+    for level in range(4):
+        assert sum(s["counts"][str(level)] for s in kpov["stations"]) == baseline[f"level{level}"]
+
+    events = client.get("/api/v1/station-levels/events", params={"window": "year"}).json()
+    risk = client.get("/api/v1/station-risk", params={"window": "year"}).json()
+    by_code = {s["equipmentCode"]: s for s in events["stations"]}
+    for code, r in risk["stations"].items():
+        if code not in by_code:
+            continue
+        drawn = sum(by_code[code]["repairs"].values())
+        assert drawn <= r["repairs"]
+    total_repairs = sum(sum(s["repairs"].values()) for s in events["stations"])
+    assert total_repairs + events["unknownLevel"]["repairs"] == sum(r["repairs"] for r in risk["stations"].values())
+    # 序號 1 的客訴：OT00420118、改善前 Level 3
+    assert by_code["OT00420118"]["complaints"]["3"] == 1
+    assert events["unmappedComplaints"] == 7
+
+    # 篩選：只看 OP 站時不會出現 CTP 設備
+    op = client.get("/api/v1/station-levels/events", params={"window": "year", "attribute": "OP"}).json()
+    assert op["stations"] and all(s["equipmentCode"].startswith("A") for s in op["stations"])
+    day = client.get("/api/v1/station-levels/events", params={"window": "day"}).json()
+    assert all(not any(s["repairs"].values()) for s in day["stations"])
+
+
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
 def test_window_filters_quadrant_and_tracking(client):
     """期間篩選連動：象限圖只算期間內有維修或客訴的 KPOV；客訴、製程追蹤依日期篩選。"""
     import datetime as dt

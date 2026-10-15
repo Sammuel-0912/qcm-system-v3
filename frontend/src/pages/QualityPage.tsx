@@ -7,8 +7,6 @@ import {
   api,
   type CheckMonitorResponse,
   type ChangeKind,
-  type ComplaintSummary,
-  type ProcessSummary,
   type ChangeWindow,
   type LevelChangesResponse,
   type FiltersResponse,
@@ -23,9 +21,8 @@ import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
 import { LevelCountBar } from '../components/LevelCountBar'
-import { LevelTallyBar } from '../components/LevelTallyBar'
-import { MeasureTable } from '../components/MeasureTable'
 import { LayoutMap } from '../components/LayoutMap'
+import { StationLevelChart } from '../components/StationLevelChart'
 import { StationRiskMap } from '../components/StationRiskMap'
 import { LevelTimeline } from '../components/LevelTimeline'
 import { MultiSelect } from '../components/MultiSelect'
@@ -35,7 +32,7 @@ import { TrendChart } from '../components/TrendChart'
 const ATTRIBUTE_LABELS: Record<string, string> = { CTP: 'CTP 自動站', OP: 'OP 人工站' }
 
 // 天／週／月／年＝近 1／7／30／365 天：影響象限圖（只算期間內有維修或客訴的 KPOV）、
-// 客訴／製程問題追蹤、等級異動總覽與站別風險地圖
+// 客訴／製程柱狀圖、等級異動總覽與站別風險地圖
 const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
   { value: 'day', label: '天', hint: '近 1 天' },
   { value: 'week', label: '週', hint: '近 7 天' },
@@ -44,8 +41,9 @@ const WINDOWS: { value: ChangeWindow; label: string; hint: string }[] = [
 ]
 const DEFAULT_WINDOW: ChangeWindow = 'month'
 
-// 象限圖與 Level 明細固定看基準口徑（KPOV 數據庫原始 Level），不提供現況／目標切換
-const VIEW = 'baseline'
+// 象限圖每格同時顯示「原始 Level（KPOV 數據庫）→ 套用維修／客訴改善後」的 KPOV 數；
+// 點格子開的 Level 明細依變化後 Level。不提供口徑切換。
+const VIEW = 'current'
 
 // 篩選與 layout 選取全部同步到 URL（spec.md REQ-UI-09）
 function readUrl(params: URLSearchParams) {
@@ -70,6 +68,15 @@ function toParams(state: ReturnType<typeof readUrl>): URLSearchParams {
   if (state.target) params.set('target', state.target)
   if (state.window !== DEFAULT_WINDOW) params.set('window', state.window)
   return params
+}
+
+/** 柱狀圖下方說明：畫不進圖的筆數（未填設備ID、算不出 Level） */
+function eventNote(unmapped: number, unknown: number, noun: string): string | undefined {
+  const parts = [
+    unmapped > 0 ? `${unmapped} 筆${noun}未填設備ID，無法歸到站別` : null,
+    unknown > 0 ? `${unknown} 筆${noun}算不出 Level，未畫入圖中` : null,
+  ].filter(Boolean)
+  return parts.length ? `另有 ${parts.join('；')}` : undefined
 }
 
 export default function QualityPage() {
@@ -122,30 +129,24 @@ export default function QualityPage() {
     }
   }, [station, line, attribute, changeWindow])
 
-  // 左半邊：客訴問題追蹤（客訴報表）與製程問題追蹤（修護報表），吃上方篩選器，各自後端分頁
-  const [complaints, setComplaints] = useState<ComplaintSummary | null>(null)
-  const [complaintPage, setComplaintPage] = useState(1)
-  const [processRows, setProcessRows] = useState<ProcessSummary | null>(null)
-  const [processPage, setProcessPage] = useState(1)
+  // 左半邊：客訴（客訴報表）與製程（修護報表）站別柱狀圖，吃上方篩選器與期間
+  const [stationEvents, setStationEvents] = useState<Awaited<ReturnType<typeof api.stationEventLevels>> | null>(null)
+  // layout 下方：各站 KPOV 原始 Level 分佈，全線一覽，不吃篩選與期間
+  const [stationKpov, setStationKpov] = useState<Awaited<ReturnType<typeof api.stationKpovLevels>> | null>(null)
 
   useEffect(() => {
     api
-      .complaintSummary({ station, line, attribute, page: complaintPage, window: changeWindow })
-      .then(setComplaints)
-      .catch(() => setComplaints(null))
-  }, [station, line, attribute, complaintPage, changeWindow, reloadKey])
+      .stationEventLevels({ station, line, attribute, window: changeWindow })
+      .then(setStationEvents)
+      .catch(() => setStationEvents(null))
+  }, [station, line, attribute, changeWindow, reloadKey])
 
   useEffect(() => {
     api
-      .processSummary({ station, line, attribute, page: processPage, window: changeWindow })
-      .then(setProcessRows)
-      .catch(() => setProcessRows(null))
-  }, [station, line, attribute, processPage, changeWindow, reloadKey])
-
-  useEffect(() => {
-    setComplaintPage(1)
-    setProcessPage(1)
-  }, [station, line, attribute, changeWindow])
+      .stationKpovLevels()
+      .then(setStationKpov)
+      .catch(() => setStationKpov(null))
+  }, [reloadKey])
 
   const loadChanges = useCallback(async () => {
     try {
@@ -256,6 +257,7 @@ export default function QualityPage() {
   }
 
   const inheritance = quadrant?.lineInheritance
+  const windowHint = WINDOWS.find((w) => w.value === changeWindow)?.hint ?? ''
 
   const headerActions = (
     <>
@@ -368,35 +370,23 @@ export default function QualityPage() {
                 />
               )}
 
-              <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
-                <LevelTallyBar
-                  title="Level 3 – Level 0 客訴筆數"
-                  series={[{ label: '客訴筆數', counts: complaints?.levelCounts ?? {} }]}
-                  total={complaints?.levelCounts.total ?? 0}
-                />
-                <MeasureTable
-                  title="客訴問題追蹤"
-                  data={complaints}
-                  onPageChange={setComplaintPage}
-                  onSelect={openHistory}
-                  emptyText="此範圍沒有客訴"
-                  storageKey="qcm.tracking.complaints"
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <StationLevelChart
+                  title="客訴柱狀圖"
+                  caption={`${windowHint}・客訴報表・依改善前 Level`}
+                  stations={stationEvents?.stations.map((s) => ({ ...s, counts: s.complaints })) ?? null}
+                  emptyText={`${windowHint}沒有對應到站別的客訴`}
+                  note={eventNote(stationEvents?.unmappedComplaints ?? 0, stationEvents?.unknownLevel.complaints ?? 0, '客訴')}
                 />
               </div>
 
-              <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
-                <LevelTallyBar
-                  title="Level 3 – Level 0 維修筆數（依 KPOV 現況等級）"
-                  series={[{ label: '現況', counts: processRows?.levelCounts.current ?? {} }]}
-                  total={processRows?.levelCounts.total ?? 0}
-                />
-                <MeasureTable
-                  title="製程問題追蹤（修護報表）"
-                  data={processRows}
-                  onPageChange={setProcessPage}
-                  onSelect={openHistory}
-                  emptyText="此範圍沒有維修紀錄"
-                  storageKey="qcm.tracking.process"
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <StationLevelChart
+                  title="製程柱狀圖"
+                  caption={`${windowHint}・修護報表・依惡化後 Level`}
+                  stations={stationEvents?.stations.map((s) => ({ ...s, counts: s.repairs })) ?? null}
+                  emptyText={`${windowHint}沒有維修紀錄`}
+                  note={eventNote(0, stationEvents?.unknownLevel.repairs ?? 0, '維修')}
                 />
               </div>
             </div>
@@ -423,6 +413,15 @@ export default function QualityPage() {
             onSelect={(target) => setState((s) => ({ ...s, target }))}
             worstLevels={worstLevels}
           />
+          <div className="mt-5 border-t border-slate-100 pt-4">
+            <StationLevelChart
+              title="站別 Level 分佈"
+              caption="各站 KPOV 個數・KPOV 數據庫原始 Level"
+              stations={stationKpov?.stations ?? null}
+              emptyText="尚無 KPOV 資料"
+              unit="個 KPOV"
+            />
+          </div>
           <StationRiskMap
             window={changeWindow}
             selected={state.target}
