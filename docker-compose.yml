@@ -1,25 +1,38 @@
+# VM／內網伺服器部署：db（PostgreSQL）＋ api（FastAPI）＋ web（nginx 靜態頁＋/api 反向代理）。
+# 設定放在同目錄的 .env（由 .env.example 複製），步驟見 DEPLOY.vm.md。
+# Zeabur 不讀這個檔案，各服務直接用資料夾內的 Dockerfile 建置（見 DEPLOY.zeabur.md）。
+
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: qcm
-      POSTGRES_USER: qcm
-      POSTGRES_PASSWORD: qcm
+      POSTGRES_DB: ${POSTGRES_DB:-qcm}
+      POSTGRES_USER: ${POSTGRES_USER:-qcm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請在 .env 設定 POSTGRES_PASSWORD}
+      TZ: ${TZ:-Asia/Taipei}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U qcm"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
-      retries: 10
+      timeout: 5s
+      retries: 20
+    # 資料庫不對外開 port，只給 api 在 compose 內網連線
 
   api:
     build: ./backend
+    image: qcm-api:latest
+    restart: unless-stopped
     environment:
-      QCM_DATABASE_URL: postgresql+psycopg://qcm:qcm@db:5432/qcm
+      QCM_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-qcm}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-qcm}
       QCM_DATA_DIR: /app/data
+      # 廠區時區（Level 3 點檢班別用），預設 UTC+8
+      QCM_SITE_UTC_OFFSET: ${QCM_SITE_UTC_OFFSET:-8}
+      TZ: ${TZ:-Asia/Taipei}
     volumes:
-      # AR 點檢的設備圖檔存在 QCM_DATA_DIR/ar-uploads 下，
-      # 沒有這個 volume 的話重新部署就會全部消失。
+      # 拍照點檢的照片與 AR 設備圖檔存在 QCM_DATA_DIR/ar-uploads，
+      # 沒有這個 volume 的話重新建置容器就會全部消失。
       - apidata:/app/data
     depends_on:
       db:
@@ -27,13 +40,17 @@ services:
 
   web:
     build: ./frontend
+    image: qcm-web:latest
+    restart: unless-stopped
     environment:
       PORT: 80
       API_URL: http://api:8000
+      TZ: ${TZ:-Asia/Taipei}
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

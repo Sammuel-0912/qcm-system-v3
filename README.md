@@ -31,11 +31,15 @@ npm run dev          # http://localhost:5173，已設定 /api 轉發到 8000
 
 開啟前端後點右上角「匯入資料」，上傳 `raw_data.xlsx` 即可。
 
-## 正式部署（內網伺服器）
+## 正式部署（Linux VM）
 
 ```bash
+cp .env.example .env             # 必改 POSTGRES_PASSWORD
 docker compose up -d --build     # http://<伺服器>:8080
 ```
+
+VM 不能連外網時，在開發機 `docker save` 打包映像再搬過去，完整步驟見 [`DEPLOY.vm.md`](./DEPLOY.vm.md)。
+雲端（Zeabur）部署見 [`DEPLOY.zeabur.md`](./DEPLOY.zeabur.md)。
 
 `docker-compose.yml` 使用 PostgreSQL 16。後端以 `QCM_DATABASE_URL` 環境變數切換資料庫，
 SQLite 與 PostgreSQL 共用同一套程式碼。
