@@ -3,7 +3,7 @@
 > 規格驅動開發（SDD）：本文件是唯一事實來源。程式碼必須符合本文件；若實作時發現本文件有誤，先改本文件再改程式碼。
 >
 > 文件狀態：**已鎖定，可開工**（D-01~D-04 已決議，見 §11）
-> 最後更新：2026-10-15
+> 最後更新：2026-10-17
 >
 > v1.1 變更：新增 §2.5 偵測方式字典、§3 等級生命週期（維修驅動的等級升降）、§5 事件帳本資料模型。
 > v1.3 變更（實作後回填）：修正 KPOV 筆數為 244、移除不存在的「未評估」計數、現況等級改為應用層推算、
@@ -892,6 +892,18 @@ v1.4（`數據庫-1011.xlsx`）：
   每格取該時段內最後一次點檢：正常（綠）、異常（紅，仍算完成）、已過未點（漏檢）、進行中、未到。同一時段點多次只算一格。
 - **REQ-CHK-04** 項目狀態：正常、異常、逾期（最近一次正常但已超過間隔）、從未點檢。監控表每分鐘重抓。
 - **REQ-CHK-05** 拍照點檢（`/ar/photo`）：免掃碼，選站別→項目→拍照上傳，**照片上傳成功即記一次點檢**，預設正常、可回報異常。
+- **REQ-CHK-06** 點檢儀表板（`/ar/dashboard`）**只顯示拍照點檢**（AR 掃碼紀錄不顯示，資料保留）：
+  - 站別良率卡片：依設備代碼彙總正常／異常次數與良率。
+  - 篩選：站別、開始／結束時間。
+  - 紀錄表欄位：`站別（KPOV・點檢內容、備註）｜狀態｜點檢時間｜照片｜操作`。
+  - 照片欄為 48px 縮圖，點擊後在頁面上彈出大圖（站別、項目、狀態、時間、在新分頁開啟原圖），可按 ✕、點背景或 Esc 關閉；
+    照片檔遺失時顯示「照片遺失」。
+  - 刪除紀錄時照片檔一併刪除（只刪上傳目錄下的檔案）。
+  - 匯出 Excel 含照片網址，時間為廠區當地時間。
+- **REQ-CHK-07** 時間的儲存與顯示：資料庫與 API 一律用 **UTC，且輸出必須帶時區**（`+00:00`；SQLite 讀回不帶時區，須經 `check_monitor.utc()` 補上）。
+  前端以 `new Date()` 轉成本地時間顯示（`utils/datetime.ts` 的 `formatLocalDateTime`），**不得直接截字串**；
+  `datetime-local` 輸入框的值須先轉成帶時區的 ISO 再送後端。匯出的 Excel 換成廠區時間並在表頭註明時區。
+  > 修正前儀表板直接截 `isoformat()` 字串，顯示的是 UTC，比首頁點檢監控慢 8 小時。
 
 ### 13.10 客訴回饋清單、製程異常清單
 
@@ -925,6 +937,10 @@ v1.4（`數據庫-1011.xlsx`）：
 | `GET /complaints/summary`、`GET /process/summary` | 客訴／製程追蹤（首頁已不使用，保留） |
 | `GET /complaints`、`GET /repairs` | 客訴、製程清單頁（分頁、關鍵字） |
 | `GET /check-monitor`、`GET /check-items`、`POST /check-inspections` | Level 3 點檢監控、拍照點檢 |
+| `GET /check-inspections?equipmentCode=&start=&end=&limit=` | 點檢儀表板：拍照點檢紀錄（新到舊，`inspectedAt` 帶時區的 UTC） |
+| `GET /check-inspections/stats` | 依設備（站別）彙總的正常／異常次數與良率 |
+| `DELETE /check-inspections/{id}` | 刪除拍照點檢紀錄與照片檔 |
+| `GET /check-inspections/export` | 匯出 Excel（廠區時間） |
 | `POST /presence/heartbeat`、`POST /presence/leave` | 線上人數 |
 | `GET /kpov/{kpovNo}/{equipmentCode}/history` | 新增 `changes`（PCN／ECN） |
 

@@ -38,7 +38,7 @@ def current_shift(now: dt.datetime) -> dict:
     回傳的 start / end 為 UTC。
     """
     site = dt.timezone(dt.timedelta(hours=SITE_UTC_OFFSET_HOURS))
-    local_now = _utc(now).astimezone(site)
+    local_now = utc(now).astimezone(site)
     best: tuple[dt.datetime, str, int] | None = None
     for day_offset in (-1, 0):
         day = local_now.date() + dt.timedelta(days=day_offset)
@@ -71,7 +71,7 @@ def _slots(records: list[Record], shift: dict, interval: dt.timedelta, now: dt.d
         start = shift["start"] + interval * i
         end = start + interval
         # records 已依時間新到舊排序，第一筆落在區間內的就是最後一次
-        hit = next((r for r in records if start <= _utc(r.inspected_at) < end), None)
+        hit = next((r for r in records if start <= utc(r.inspected_at) < end), None)
         if hit is not None:
             state = SLOT_WARN if hit.status == "warn" else SLOT_OK
         elif end <= now:
@@ -85,14 +85,14 @@ def _slots(records: list[Record], shift: dict, interval: dt.timedelta, now: dt.d
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "state": state,
-                "inspectedAt": _utc(hit.inspected_at).isoformat() if hit else None,
+                "inspectedAt": utc(hit.inspected_at).isoformat() if hit else None,
                 "photoUrl": getattr(hit, "photo_url", None) if hit else None,
             }
         )
     return slots
 
 
-def _utc(value: dt.datetime) -> dt.datetime:
+def utc(value: dt.datetime) -> dt.datetime:
     # SQLite 讀回的 datetime 不帶時區
     return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value.astimezone(dt.timezone.utc)
 
@@ -123,7 +123,7 @@ def monitor_rows(
     items: list[FactCheckItem],
     now: dt.datetime | None = None,
 ) -> list[dict]:
-    now = _utc(now or dt.datetime.now(dt.timezone.utc))
+    now = utc(now or dt.datetime.now(dt.timezone.utc))
     codes = {i.equipment_code for i in items if i.equipment_code}
     history: dict[tuple, list[Record]] = {}
     if codes:
@@ -135,7 +135,7 @@ def monitor_rows(
             ),
             *session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.equipment_code.in_(codes))),
         ]
-        records.sort(key=lambda r: _utc(r.inspected_at), reverse=True)
+        records.sort(key=lambda r: utc(r.inspected_at), reverse=True)
         for record in records:
             history.setdefault(item_key(record.equipment_code, record.kpov_no, record.check_content), []).append(
                 record
@@ -147,7 +147,7 @@ def monitor_rows(
         interval = dt.timedelta(hours=float(item.interval_hours or 2))
         records = history.get(item_key(item.equipment_code, item.kpov_no, item.check_content), [])
         last = records[0] if records else None
-        last_at = _utc(last.inspected_at) if last else None
+        last_at = utc(last.inspected_at) if last else None
         if last is None:
             status = STATUS_NEVER
         elif last.status == "warn":
@@ -180,14 +180,14 @@ def monitor_rows(
                 "slots": slots,
                 "completed": done,
                 "progress": round(done / len(slots) * 100),
-                "count24h": sum(1 for r in records if now - _utc(r.inspected_at) <= dt.timedelta(hours=24)),
+                "count24h": sum(1 for r in records if now - utc(r.inspected_at) <= dt.timedelta(hours=24)),
             }
         )
     return rows
 
 
 def shift_payload(now: dt.datetime | None = None) -> dict:
-    shift = current_shift(_utc(now or dt.datetime.now(dt.timezone.utc)))
+    shift = current_shift(utc(now or dt.datetime.now(dt.timezone.utc)))
     return {**shift, "start": shift["start"].isoformat(), "end": shift["end"].isoformat()}
 
 

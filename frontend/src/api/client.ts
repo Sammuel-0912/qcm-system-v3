@@ -345,6 +345,29 @@ export type HistoryResponse = {
   target: { level: number | null }
 }
 
+/** 一筆拍照點檢紀錄；inspectedAt 為帶時區的 UTC，顯示時轉本地時間 */
+export type PhotoInspection = {
+  id: number
+  equipmentCode: string
+  station: string
+  kpovNo: string | null
+  checkContent: string
+  status: 'ok' | 'warn'
+  note: string | null
+  photoUrl: string
+  inspectedAt: string
+}
+
+/** 點檢儀表板良率卡片：依設備（站別）彙總 */
+export type PhotoInspectionStat = {
+  equipmentCode: string
+  station: string
+  total: number
+  okCount: number
+  warnCount: number
+  okRate: number
+}
+
 export class ApiError extends Error {}
 
 async function get<T>(path: string, params: Record<string, string | undefined> = {}): Promise<T> {
@@ -435,6 +458,16 @@ export const api = {
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '上傳失敗')
     return body as { id: number; status: string; photoUrl: string; inspectedAt: string }
   },
+  /** 點檢儀表板：拍照點檢紀錄（新到舊）。start／end 傳帶時區的 ISO 時間 */
+  photoInspections: (p: { equipmentCode?: string; start?: string; end?: string }) =>
+    get<{ total: number; items: PhotoInspection[] }>('/check-inspections', p),
+  photoInspectionStats: () => get<PhotoInspectionStat[]>('/check-inspections/stats'),
+  async deletePhotoInspection(id: number) {
+    const res = await fetch(`${BASE}/check-inspections/${id}`, { method: 'DELETE' })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '刪除失敗')
+  },
+  photoInspectionExportUrl: () => `${BASE}/check-inspections/export`,
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

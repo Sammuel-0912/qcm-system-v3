@@ -313,6 +313,80 @@ def test_photo_upload_records_inspection(client):
     assert len(list((AR_UPLOAD_DIR / "checks").iterdir())) == 1
 
 
+# V3 定義在檔案後段，裝飾器在定義當下求值，這裡直接寫路徑
+@pytest.mark.skipif(not (RAW.parent / "數據庫-1011.xlsx").exists(), reason="數據庫-1011.xlsx 不存在")
+def test_photo_inspection_dashboard(client):
+    """點檢儀表板：拍照點檢紀錄（帶時區的 UTC）、依站別統計、匯出用廠區時間、刪除連同照片。"""
+    import datetime as dt
+    import io
+
+    import openpyxl
+
+    from app.config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX
+
+    _import_v3(client)
+    station = client.get("/api/v1/check-items").json()["stations"][0]
+    item = client.get("/api/v1/check-items", params={"station": station}).json()["items"][0]
+    form = {"equipmentCode": item["equipmentCode"], "kpovNo": item["kpovNo"], "checkContent": item["checkContent"]}
+    ids = []
+    for status in ("ok", "warn"):
+        res = client.post(
+            "/api/v1/check-inspections",
+            data={**form, "status": status},
+            files={"file": ("p.jpg", b"\xff\xd8" + status.encode(), "image/jpeg")},
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["inspectedAt"].endswith("+00:00")
+        ids.append(res.json()["id"])
+
+    body = client.get("/api/v1/check-inspections").json()
+    assert body["total"] == 2
+    items = body["items"]
+    assert [i["id"] for i in items] == ids[::-1]  # 新到舊
+    for i in items:
+        assert i["inspectedAt"].endswith("+00:00")
+        assert i["station"] and i["equipmentCode"] == item["equipmentCode"]
+        assert client.get(i["photoUrl"]).status_code == 200
+
+    # 篩選：設備代碼、時間（帶時區）
+    assert client.get("/api/v1/check-inspections", params={"equipmentCode": "NOPE"}).json()["total"] == 0
+    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+    past = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)).isoformat()
+    assert client.get("/api/v1/check-inspections", params={"start": future}).json()["total"] == 0
+    assert client.get("/api/v1/check-inspections", params={"start": past, "end": future}).json()["total"] == 2
+
+    stats = client.get("/api/v1/check-inspections/stats").json()
+    assert stats == [
+        {
+            "equipmentCode": item["equipmentCode"],
+            "station": items[0]["station"],
+            "total": 2,
+            "okCount": 1,
+            "warnCount": 1,
+            "okRate": 0.5,
+        }
+    ]
+
+    # 匯出：時間為廠區時間（UTC+8）
+    export = client.get("/api/v1/check-inspections/export")
+    assert export.status_code == 200
+    ws = openpyxl.load_workbook(io.BytesIO(export.content)).active
+    assert ws.cell(1, 9).value == "點檢時間（UTC+8）"
+    exported = dt.datetime.strptime(ws.cell(2, 9).value, "%Y-%m-%d %H:%M:%S")
+    utc_at = dt.datetime.fromisoformat(items[0]["inspectedAt"]).replace(tzinfo=None)
+    assert exported - utc_at.replace(microsecond=0) == dt.timedelta(hours=8)
+
+    # 刪除：紀錄與照片檔都消失；不存在的 id 回 404
+    for i in items:
+        path = AR_UPLOAD_DIR / i["photoUrl"][len(AR_UPLOAD_URL_PREFIX) + 1 :]
+        assert path.exists()
+        assert client.delete(f"/api/v1/check-inspections/{i['id']}").status_code == 200
+        assert not path.exists()
+    assert client.get("/api/v1/check-inspections").json()["total"] == 0
+    assert client.delete(f"/api/v1/check-inspections/{ids[0]}").status_code == 404
+    assert client.get("/api/v1/check-inspections/export").status_code == 404
+
+
 @pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
 def test_events_level_after_filter(client):
     with V2.open("rb") as fh:

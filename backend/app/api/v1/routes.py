@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import shutil
 import tempfile
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX
+from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX, SITE_UTC_OFFSET_HOURS
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
 from ...models import (
@@ -27,9 +29,9 @@ from ...models import (
     ImportBatch,
 )
 from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
-from ...services.station_levels import event_levels, kpov_levels
+from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
-from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows
+from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows, utc
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
@@ -988,5 +990,149 @@ def create_check_inspection(
         "id": record.id,
         "status": record.status,
         "photoUrl": record.photo_url,
-        "inspectedAt": record.inspected_at.isoformat(),
+        "inspectedAt": utc(record.inspected_at).isoformat(),
     }
+
+
+# --------------------------------------------------------------------------- 點檢儀表板（拍照點檢紀錄）
+# 時間一律以帶時區的 UTC 輸出（SQLite 讀回不帶時區，須以 utc() 補上），由前端轉成本地時間顯示；
+# 只有匯出的 Excel 直接換成廠區時間。
+
+
+def _station_names(session: Session) -> dict[str, str]:
+    """設備代碼 -> 站名（依目前生效批次的 KPOV 庫）；尚未匯入時為空。"""
+    batch = active_batch(session)
+    return dict(station_order(session, batch.id)) if batch else {}
+
+
+def _photo_records(
+    session: Session,
+    equipment_code: str | None = None,
+    start: dt.datetime | None = None,
+    end: dt.datetime | None = None,
+) -> list[CheckPhotoInspection]:
+    stmt = select(CheckPhotoInspection).order_by(
+        CheckPhotoInspection.inspected_at.desc(), CheckPhotoInspection.id.desc()
+    )
+    if equipment_code:
+        stmt = stmt.where(CheckPhotoInspection.equipment_code == equipment_code)
+    records = session.scalars(stmt).all()
+    # 時間篩選在 Python 端做：SQLite 存的是不帶時區的 UTC，直接在 SQL 比較帶時區的參數不可靠
+    if start is not None:
+        records = [r for r in records if utc(r.inspected_at) >= utc(start)]
+    if end is not None:
+        records = [r for r in records if utc(r.inspected_at) <= utc(end)]
+    return records
+
+
+def _photo_out(record: CheckPhotoInspection, names: dict[str, str]) -> dict:
+    return {
+        "id": record.id,
+        "equipmentCode": record.equipment_code,
+        "station": names.get(record.equipment_code, record.equipment_code),
+        "kpovNo": record.kpov_no,
+        "checkContent": record.check_content,
+        "status": record.status,
+        "note": record.note,
+        "photoUrl": record.photo_url,
+        "inspectedAt": utc(record.inspected_at).isoformat(),
+    }
+
+
+@router.get("/check-inspections")
+def list_check_inspections(
+    equipment_code: str | None = Query(None, alias="equipmentCode"),
+    start: dt.datetime | None = None,
+    end: dt.datetime | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    session: Session = Depends(get_session),
+):
+    """點檢儀表板：拍照點檢紀錄，新到舊。start／end 為帶時區的 ISO 時間（不帶時區視為 UTC）。"""
+    records = _photo_records(session, equipment_code, start, end)
+    names = _station_names(session)
+    return {"total": len(records), "items": [_photo_out(r, names) for r in records[:limit]]}
+
+
+@router.get("/check-inspections/stats")
+def check_inspection_stats(session: Session = Depends(get_session)):
+    """點檢儀表板的良率卡片：依設備（站別）彙總拍照點檢的正常／異常次數。"""
+    names = _station_names(session)
+    stats: dict[str, dict] = {}
+    for record in _photo_records(session):
+        entry = stats.setdefault(
+            record.equipment_code,
+            {
+                "equipmentCode": record.equipment_code,
+                "station": names.get(record.equipment_code, record.equipment_code),
+                "total": 0,
+                "okCount": 0,
+                "warnCount": 0,
+            },
+        )
+        entry["total"] += 1
+        entry["okCount" if record.status == "ok" else "warnCount"] += 1
+    order = {code: i for i, code in enumerate(names)}
+    rows = sorted(stats.values(), key=lambda s: (order.get(s["equipmentCode"], len(order)), s["equipmentCode"]))
+    for row in rows:
+        row["okRate"] = round(row["okCount"] / row["total"], 4)
+    return rows
+
+
+@router.delete("/check-inspections/{record_id}")
+def delete_check_inspection(record_id: int, session: Session = Depends(get_session)):
+    """刪除一筆拍照點檢，照片檔一併刪除。"""
+    record = session.get(CheckPhotoInspection, record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="找不到該筆點檢紀錄")
+    photo = record.photo_url
+    session.delete(record)
+    session.commit()
+    prefix = f"{AR_UPLOAD_URL_PREFIX}/"
+    if photo and photo.startswith(prefix):
+        target = (AR_UPLOAD_DIR / photo[len(prefix) :]).resolve()
+        # 只刪上傳目錄底下的檔案，避免被竄改的路徑刪到其他地方
+        if target.is_relative_to(AR_UPLOAD_DIR.resolve()):
+            target.unlink(missing_ok=True)
+    return {"id": record_id, "deleted": True}
+
+
+@router.get("/check-inspections/export")
+def export_check_inspections(session: Session = Depends(get_session)):
+    """點檢紀錄匯出 Excel，時間換成廠區當地時間。"""
+    from openpyxl import Workbook
+
+    records = _photo_records(session)
+    if not records:
+        raise HTTPException(status_code=404, detail="目前沒有點檢紀錄可匯出")
+    names = _station_names(session)
+    site = dt.timezone(dt.timedelta(hours=SITE_UTC_OFFSET_HOURS))
+    offset = f"UTC{SITE_UTC_OFFSET_HOURS:+g}"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "點檢紀錄"
+    ws.append(["紀錄編號", "站別", "設備代碼", "KPOV 編號", "點檢內容", "狀態", "備註", "照片網址", f"點檢時間（{offset}）"])
+    for r in records:
+        ws.append(
+            [
+                r.id,
+                names.get(r.equipment_code, r.equipment_code),
+                r.equipment_code,
+                r.kpov_no,
+                r.check_content,
+                "正常" if r.status == "ok" else "異常",
+                r.note,
+                r.photo_url,
+                utc(r.inspected_at).astimezone(site).strftime("%Y-%m-%d %H:%M:%S"),
+            ]
+        )
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    stamp = dt.datetime.now(site).strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="check_inspections_{stamp}.xlsx"'},
+    )
