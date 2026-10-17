@@ -1,0 +1,2 @@
+# 容器內執行的 shell 腳本一律 LF，Windows 簽出也不轉 CRLF
+*.sh text eol=lf

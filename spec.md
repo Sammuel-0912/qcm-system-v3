@@ -709,7 +709,10 @@ QualityControlModeling/
 - **REQ-DEP-02** 設定集中在 `.env`（範本 `.env.example`，不進版控）；`POSTGRES_PASSWORD` 必填，未設定時 compose 直接報錯。
 - **REQ-DEP-03** 資料持久化：資料庫在 volume `pgdata`；拍照點檢照片與 AR 圖檔在 `apidata`（`QCM_DATA_DIR=/app/data`）。
 - **REQ-DEP-04** 三個服務皆 `restart: unless-stopped` 並有健康檢查（db：`pg_isready`；api：`/health`；web：首頁），依序等待前一個 healthy 才啟動。
-- **REQ-DEP-05** `api` 以非 root（uid 10001）執行，且只能單一程序（線上人數存在程序記憶體）。
+- **REQ-DEP-05** `api` 的後端程序以非 root（uid 10001）執行，且只能單一程序（線上人數存在程序記憶體）。
+  容器以 root 啟動，`docker-entrypoint.sh` 先把 `QCM_DATA_DIR` 的擁有者改成 app，再以 `setpriv` 降權——
+  平台掛上的 volume（Zeabur、compose）多半屬於 root，直接以非 root 啟動會無法寫入照片。
+  Zeabur 的 api 服務 volume 須掛在 `/app/data`（與 `QCM_DATA_DIR` 預設一致）。
 - **REQ-DEP-06** VM 不能連外網時，以 `docker save` 打包 `qcm-api`、`qcm-web`、`postgres:16-alpine` 成 `qcm-images.tar.gz`，VM 上 `docker load` 後 `docker compose up -d --no-build`，不需原始碼（步驟見 `DEPLOY.vm.md`）。
 
 ### 10.2 開發順序

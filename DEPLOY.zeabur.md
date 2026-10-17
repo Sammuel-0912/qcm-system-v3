@@ -98,7 +98,13 @@ git add -A && git commit -m "..." && git push
 - nginx 以**變數**方式 `proxy_pass`，每次請求才解析後端 DNS。
   好處是 `api` 還沒起來時 `web` 不會 crash，會等 `api` 好了自動接上。
 - 兩個服務都讀 `PORT` 環境變數，符合 Zeabur 的注入慣例。
-- 後端 `QCM_DATA_DIR` 在使用 PostgreSQL 時只是個空目錄，不需要掛 Volume。
+- 後端的資料目錄 `QCM_DATA_DIR`（預設 `/app/data`）存放**拍照點檢的照片**與 AR 設備圖檔，
+  **必須在 api 服務掛 Volume，掛載路徑 `/app/data`**，否則重新部署後照片全部消失。
+  資料庫本身在 PostgreSQL 服務，不受影響。
+  > 舊版 Dockerfile 的預設是 `/data`；若當時 Volume 掛在 `/app/data` 又沒設 `QCM_DATA_DIR`，
+  > 照片其實寫在容器內的 `/data`，重新部署後就不在了，這些舊紀錄會顯示「照片遺失」。
+- api 容器以 root 啟動，由 entrypoint 把 `/app/data` 的擁有者改成 app 使用者後再降權執行；
+  Volume 屬於 root 也能正常寫入，不需另外調整權限。
 
 ## 本機驗證（與線上同一組 Dockerfile）
 
