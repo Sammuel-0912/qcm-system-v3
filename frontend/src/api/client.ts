@@ -467,7 +467,13 @@ export const api = {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '刪除失敗')
   },
-  photoInspectionExportUrl: () => `${BASE}/check-inspections/export`,
+  /** 匯出含照片的 Excel；篩選條件同列表，baseUrl 用來組出可點的原圖連結 */
+  photoInspectionExportUrl: (p: { equipmentCode?: string; start?: string; end?: string; baseUrl?: string }) => {
+    const search = new URLSearchParams()
+    for (const [key, value] of Object.entries(p)) if (value) search.set(key, value)
+    const query = search.toString()
+    return `${BASE}/check-inspections/export${query ? `?${query}` : ''}`
+  },
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

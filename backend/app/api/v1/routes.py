@@ -31,7 +31,7 @@ from ...models import (
 from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
 from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
-from ...services.check_monitor import check_items, monitor_rows, shift_payload, summarize_rows, utc
+from ...services.check_monitor import check_items, monitor_rows, shift_of, shift_payload, summarize_rows, utc
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
@@ -1084,26 +1084,69 @@ def delete_check_inspection(record_id: int, session: Session = Depends(get_sessi
     record = session.get(CheckPhotoInspection, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="找不到該筆點檢紀錄")
-    photo = record.photo_url
+    target = _photo_path(record.photo_url)
     session.delete(record)
     session.commit()
-    prefix = f"{AR_UPLOAD_URL_PREFIX}/"
-    if photo and photo.startswith(prefix):
-        target = (AR_UPLOAD_DIR / photo[len(prefix) :]).resolve()
-        # 只刪上傳目錄底下的檔案，避免被竄改的路徑刪到其他地方
-        if target.is_relative_to(AR_UPLOAD_DIR.resolve()):
-            target.unlink(missing_ok=True)
+    if target is not None:
+        target.unlink(missing_ok=True)
     return {"id": record_id, "deleted": True}
 
 
-@router.get("/check-inspections/export")
-def export_check_inspections(session: Session = Depends(get_session)):
-    """點檢紀錄匯出 Excel，時間換成廠區當地時間。"""
-    from openpyxl import Workbook
+def _photo_path(photo_url: str | None) -> Path | None:
+    """照片網址 -> 上傳目錄內的實體檔案；不在上傳目錄底下（路徑被竄改）時回 None。"""
+    prefix = f"{AR_UPLOAD_URL_PREFIX}/"
+    if not photo_url or not photo_url.startswith(prefix):
+        return None
+    target = (AR_UPLOAD_DIR / photo_url[len(prefix) :]).resolve()
+    return target if target.is_relative_to(AR_UPLOAD_DIR.resolve()) else None
 
-    records = _photo_records(session)
+
+EXPORT_MAX_ROWS = 1000
+EXPORT_THUMB_WIDTH = 240
+
+
+def _thumbnail(path: Path | None):
+    """照片縮成寬 240px 的 JPEG 供嵌入 Excel；檔案不存在或無法讀取時回 None。"""
+    if path is None or not path.is_file():
+        return None
+    from openpyxl.drawing.image import Image as XlImage
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(path) as img:
+            img = ImageOps.exif_transpose(img).convert("RGB")  # 手機照片依 EXIF 轉正
+            img.thumbnail((EXPORT_THUMB_WIDTH, EXPORT_THUMB_WIDTH * 2))
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=80)
+    except Exception:
+        return None
+    buffer.seek(0)
+    return XlImage(buffer)
+
+
+@router.get("/check-inspections/export")
+def export_check_inspections(
+    equipment_code: str | None = Query(None, alias="equipmentCode"),
+    start: dt.datetime | None = None,
+    end: dt.datetime | None = None,
+    base_url: str | None = Query(None, alias="baseUrl", pattern=r"^https?://[^\s]+$"),
+    session: Session = Depends(get_session),
+):
+    """點檢紀錄匯出 Excel（含照片縮圖），依點檢時間由舊到新，篩選條件與列表相同。
+
+    時間換成廠區當地時間並標示班別（空檔歸入剛結束的班，夜班日期記為開班日）。
+    最多匯出最新 1000 筆，超過時於表頭上方提醒並在回應標頭註明。
+    """
+    from urllib.parse import quote
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    records = _photo_records(session, equipment_code, start, end)  # 新到舊
     if not records:
-        raise HTTPException(status_code=404, detail="目前沒有點檢紀錄可匯出")
+        raise HTTPException(status_code=404, detail="沒有符合條件的點檢紀錄可匯出")
+    truncated = len(records) > EXPORT_MAX_ROWS
+    records = list(reversed(records[:EXPORT_MAX_ROWS]))  # 取最新的 N 筆，再改成舊到新
     names = _station_names(session)
     site = dt.timezone(dt.timedelta(hours=SITE_UTC_OFFSET_HOURS))
     offset = f"UTC{SITE_UTC_OFFSET_HOURS:+g}"
@@ -1111,28 +1154,78 @@ def export_check_inspections(session: Session = Depends(get_session)):
     wb = Workbook()
     ws = wb.active
     ws.title = "點檢紀錄"
-    ws.append(["紀錄編號", "站別", "設備代碼", "KPOV 編號", "點檢內容", "狀態", "備註", "照片網址", f"點檢時間（{offset}）"])
+    headers = [
+        "日期", "班別", f"點檢時間（{offset}）", "站別", "設備代碼", "KPOV 編號",
+        "點檢內容", "點檢結果", "備註", "照片", "原圖連結",
+    ]
+    widths = [12, 8, 20, 18, 13, 12, 36, 10, 20, 35, 14]
+    if truncated:
+        ws.append([f"僅匯出最新 {EXPORT_MAX_ROWS} 筆，請縮小時間範圍後再匯出其餘紀錄"])
+        ws.cell(1, 1).font = Font(bold=True, color="C00000")
+    ws.append(headers)
+    header_row = ws.max_row
+    for col, width in enumerate(widths, start=1):
+        cell = ws.cell(header_row, col)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F5C7A")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[cell.column_letter].width = width
+    ws.freeze_panes = f"A{header_row + 1}"  # 用座標字串：ws.cell() 會建出空列，讓 append 跳過一列
+
+    middle = Alignment(vertical="center", wrap_text=True)
     for r in records:
+        at = utc(r.inspected_at)
+        shift = shift_of(at)
         ws.append(
             [
-                r.id,
+                shift["date"].isoformat(),
+                shift["name"],
+                at.astimezone(site).strftime("%Y-%m-%d %H:%M:%S"),
                 names.get(r.equipment_code, r.equipment_code),
                 r.equipment_code,
                 r.kpov_no,
                 r.check_content,
                 "正常" if r.status == "ok" else "異常",
                 r.note,
-                r.photo_url,
-                utc(r.inspected_at).astimezone(site).strftime("%Y-%m-%d %H:%M:%S"),
+                None,
+                None,
             ]
         )
+        row = ws.max_row
+        for col in range(1, len(headers) + 1):
+            ws.cell(row, col).alignment = middle
+        if r.status != "ok":
+            ws.cell(row, 8).font = Font(bold=True, color="C00000")
+
+        image = _thumbnail(_photo_path(r.photo_url))
+        if image is None:
+            ws.cell(row, 10).value = "照片遺失"
+            ws.row_dimensions[row].height = 30
+        else:
+            ws.add_image(image, ws.cell(row, 10).coordinate)
+            ws.row_dimensions[row].height = image.height * 0.75 + 6  # px -> pt
+
+        link = ws.cell(row, 11)
+        if base_url:
+            link.value = "開啟原圖"
+            link.hyperlink = base_url.rstrip("/") + r.photo_url
+            link.font = Font(color="0563C1", underline="single")
+        else:
+            link.value = r.photo_url
 
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
-    stamp = dt.datetime.now(site).strftime("%Y%m%d_%H%M%S")
+    filename = f"點檢紀錄_{dt.datetime.now(site):%Y%m%d_%H%M%S}.xlsx"
+    headers_out = {
+        # 中文檔名：filename* 為 RFC 5987 編碼，filename 給不支援的舊瀏覽器
+        "Content-Disposition": f"attachment; filename=\"check_inspections.xlsx\"; filename*=UTF-8''{quote(filename)}",
+        "Access-Control-Expose-Headers": "X-Export-Truncated",
+    }
+    if truncated:
+        headers_out["X-Export-Truncated"] = "1"
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="check_inspections_{stamp}.xlsx"'},
+        headers=headers_out,
     )

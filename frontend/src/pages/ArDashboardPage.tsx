@@ -170,10 +170,16 @@ export default function ArDashboardPage() {
         拍照點檢
       </Link>
       <a
-        href={api.photoInspectionExportUrl()}
+        href={api.photoInspectionExportUrl({
+          equipmentCode: equipmentCode || undefined,
+          start: localInputToIso(start),
+          end: localInputToIso(end),
+          baseUrl: window.location.origin,
+        })}
+        title="依目前的站別與時間篩選匯出 Excel：時間、班別、點檢結果與照片縮圖"
         className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
       >
-        匯出報表
+        匯出紀錄（含照片）
       </a>
       <button
         onClick={() => void load()}

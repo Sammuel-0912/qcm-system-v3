@@ -899,11 +899,22 @@ v1.4（`數據庫-1011.xlsx`）：
   - 照片欄為 48px 縮圖，點擊後在頁面上彈出大圖（站別、項目、狀態、時間、在新分頁開啟原圖），可按 ✕、點背景或 Esc 關閉；
     照片檔遺失時顯示「照片遺失」。
   - 刪除紀錄時照片檔一併刪除（只刪上傳目錄下的檔案）。
-  - 匯出 Excel 含照片網址，時間為廠區當地時間。
+  - 「匯出紀錄（含照片）」依目前的站別與時間篩選匯出，格式見 REQ-CHK-08。
 - **REQ-CHK-07** 時間的儲存與顯示：資料庫與 API 一律用 **UTC，且輸出必須帶時區**（`+00:00`；SQLite 讀回不帶時區，須經 `check_monitor.utc()` 補上）。
   前端以 `new Date()` 轉成本地時間顯示（`utils/datetime.ts` 的 `formatLocalDateTime`），**不得直接截字串**；
   `datetime-local` 輸入框的值須先轉成帶時區的 ISO 再送後端。匯出的 Excel 換成廠區時間並在表頭註明時區。
   > 修正前儀表板直接截 `isoformat()` 字串，顯示的是 UTC，比首頁點檢監控慢 8 小時。
+- **REQ-CHK-08** 點檢紀錄匯出（`GET /check-inspections/export`，Excel）：
+  - 篩選條件與列表相同（站別、開始／結束時間），依點檢時間**由舊到新**排列。
+  - 欄位：`日期｜班別｜點檢時間（UTC+8）｜站別｜設備代碼｜KPOV 編號｜點檢內容｜點檢結果｜備註｜照片｜原圖連結`。
+  - 班別（`check_monitor.shift_of`）：白班 08:00–18:00、夜班 20:00–06:00（廠區時間）；
+    空檔 18–20 歸白班、06–08 歸夜班（剛結束的班，與首頁一致）；夜班跨午夜時「日期」記為開班日。
+    匯出用「白班」，首頁沿用「日班」（`EXPORT_SHIFT_NAMES`）。
+  - 照片：以 Pillow 縮成寬 240px 的 JPEG（依 EXIF 轉正）嵌入「照片」欄；照片檔不存在或無法讀取時寫「照片遺失」。
+  - 原圖連結：前端帶 `baseUrl`（`window.location.origin`）組成可點的超連結；`baseUrl` 只接受 http／https。
+  - 點檢結果為異常時以紅色粗體標示；表頭凍結。
+  - 最多 1000 筆（取最新的 1000 筆）；超過時在表頭上方加提醒列，並回應標頭 `X-Export-Truncated: 1`。沒有符合的紀錄回 404。
+  - 檔名 `點檢紀錄_<廠區時間>.xlsx`（`filename*` 以 RFC 5987 編碼）。
 
 ### 13.10 客訴回饋清單、製程異常清單
 
@@ -940,7 +951,7 @@ v1.4（`數據庫-1011.xlsx`）：
 | `GET /check-inspections?equipmentCode=&start=&end=&limit=` | 點檢儀表板：拍照點檢紀錄（新到舊，`inspectedAt` 帶時區的 UTC） |
 | `GET /check-inspections/stats` | 依設備（站別）彙總的正常／異常次數與良率 |
 | `DELETE /check-inspections/{id}` | 刪除拍照點檢紀錄與照片檔 |
-| `GET /check-inspections/export` | 匯出 Excel（廠區時間） |
+| `GET /check-inspections/export?equipmentCode=&start=&end=&baseUrl=` | 匯出 Excel：班別、點檢結果、照片縮圖（REQ-CHK-08） |
 | `POST /presence/heartbeat`、`POST /presence/leave` | 線上人數 |
 | `GET /kpov/{kpovNo}/{equipmentCode}/history` | 新增 `changes`（PCN／ECN） |
 

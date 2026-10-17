@@ -57,6 +57,23 @@ def current_shift(now: dt.datetime) -> dict:
     }
 
 
+# 匯出報表用的班別名稱（使用者慣稱白班）；首頁仍沿用 CHECK_SHIFTS 的「日班」
+EXPORT_SHIFT_NAMES = {"日班": "白班"}
+
+
+def shift_of(at: dt.datetime) -> dict:
+    """某筆點檢屬於哪一班：與 current_shift 同一套規則，空檔歸入剛結束的班。
+
+    date 為開班當天的廠區日期——夜班跨午夜時（例：10/16 02:00）記為前一天（10/15）夜班。
+    """
+    shift = current_shift(at)
+    site = dt.timezone(dt.timedelta(hours=SITE_UTC_OFFSET_HOURS))
+    return {
+        "name": EXPORT_SHIFT_NAMES.get(shift["name"], shift["name"]),
+        "date": shift["start"].astimezone(site).date(),
+    }
+
+
 Record = ArInspection | CheckPhotoInspection
 
 

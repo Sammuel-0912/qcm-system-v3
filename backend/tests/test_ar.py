@@ -313,6 +313,37 @@ def test_photo_upload_records_inspection(client):
     assert len(list((AR_UPLOAD_DIR / "checks").iterdir())) == 1
 
 
+def _png() -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 480), (30, 120, 200)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_shift_of():
+    """匯出班別：白班 08–18、夜班 20–06（UTC+8），空檔歸入剛結束的班，夜班日期記為開班日。"""
+    import datetime as dt
+
+    from app.services.check_monitor import shift_of
+
+    tw = dt.timezone(dt.timedelta(hours=8))
+
+    def at(day, hour):
+        return dt.datetime(2026, 10, day, hour, tzinfo=tw).astimezone(dt.timezone.utc)
+
+    cases = [
+        (at(16, 9), "白班", 16),
+        (at(16, 19), "白班", 16),  # 18–20 空檔 -> 剛結束的白班
+        (at(16, 21), "夜班", 16),
+        (at(17, 2), "夜班", 16),  # 跨午夜 -> 開班日 10/16
+        (at(17, 7), "夜班", 16),  # 06–08 空檔 -> 剛結束的夜班
+    ]
+    for when, name, day in cases:
+        shift = shift_of(when)
+        assert (shift["name"], shift["date"]) == (name, dt.date(2026, 10, day)), when
+
+
 # V3 定義在檔案後段，裝飾器在定義當下求值，這裡直接寫路徑
 @pytest.mark.skipif(not (RAW.parent / "數據庫-1011.xlsx").exists(), reason="數據庫-1011.xlsx 不存在")
 def test_photo_inspection_dashboard(client):
@@ -333,7 +364,8 @@ def test_photo_inspection_dashboard(client):
         res = client.post(
             "/api/v1/check-inspections",
             data={**form, "status": status},
-            files={"file": ("p.jpg", b"\xff\xd8" + status.encode(), "image/jpeg")},
+            # 正常那筆用真的 PNG（匯出時會嵌入縮圖）；異常那筆是讀不出來的假圖（匯出顯示「照片遺失」）
+            files={"file": ("p.png", _png() if status == "ok" else b"\xff\xd8broken", "image/png")},
         )
         assert res.status_code == 201, res.text
         assert res.json()["inspectedAt"].endswith("+00:00")
@@ -367,14 +399,28 @@ def test_photo_inspection_dashboard(client):
         }
     ]
 
-    # 匯出：時間為廠區時間（UTC+8）
-    export = client.get("/api/v1/check-inspections/export")
+    # 匯出：舊到新、廠區時間（UTC+8）、班別、正常那筆嵌入縮圖、異常那筆照片讀不出來
+    export = client.get("/api/v1/check-inspections/export", params={"baseUrl": "https://qcm.example.com"})
     assert export.status_code == 200
+    assert "filename*=UTF-8''" in export.headers["content-disposition"]
+    assert "x-export-truncated" not in export.headers
     ws = openpyxl.load_workbook(io.BytesIO(export.content)).active
-    assert ws.cell(1, 9).value == "點檢時間（UTC+8）"
-    exported = dt.datetime.strptime(ws.cell(2, 9).value, "%Y-%m-%d %H:%M:%S")
-    utc_at = dt.datetime.fromisoformat(items[0]["inspectedAt"]).replace(tzinfo=None)
-    assert exported - utc_at.replace(microsecond=0) == dt.timedelta(hours=8)
+    assert [c.value for c in ws[1]] == [
+        "日期", "班別", "點檢時間（UTC+8）", "站別", "設備代碼", "KPOV 編號",
+        "點檢內容", "點檢結果", "備註", "照片", "原圖連結",
+    ]
+    oldest = items[-1]
+    exported = dt.datetime.strptime(ws.cell(2, 3).value, "%Y-%m-%d %H:%M:%S")
+    utc_at = dt.datetime.fromisoformat(oldest["inspectedAt"]).replace(tzinfo=None, microsecond=0)
+    assert exported - utc_at == dt.timedelta(hours=8)
+    assert ws.cell(2, 2).value in ("白班", "夜班")
+    assert [ws.cell(r, 8).value for r in (2, 3)] == ["正常", "異常"]
+    assert len(ws._images) == 1 and ws.cell(2, 10).value is None
+    assert ws.cell(3, 10).value == "照片遺失"
+    assert ws.cell(2, 11).hyperlink.target == "https://qcm.example.com" + oldest["photoUrl"]
+    # 篩選與列表相同；沒有符合的紀錄回 404；baseUrl 不是 http(s) 回 422
+    assert client.get("/api/v1/check-inspections/export", params={"equipmentCode": "NOPE"}).status_code == 404
+    assert client.get("/api/v1/check-inspections/export", params={"baseUrl": "javascript:x"}).status_code == 422
 
     # 刪除：紀錄與照片檔都消失；不存在的 id 回 404
     for i in items:
