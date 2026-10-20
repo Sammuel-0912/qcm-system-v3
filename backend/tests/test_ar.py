@@ -8,7 +8,9 @@ import tempfile
 
 import pytest
 
-RAW = pathlib.Path(__file__).resolve().parent.parent.parent / "raw_data.xlsx"
+# v3 只以數據庫-1019 為準（不再相容 1008／1011／raw_data 的測試）
+DATA = pathlib.Path(__file__).resolve().parent.parent.parent / "數據庫-1019.xlsx"
+RAW = DATA
 
 
 # 在 import app 之前就把資料庫與資料目錄指到暫存位置：
@@ -164,7 +166,7 @@ def test_quality_bridge_without_import(client):
     assert "尚未匯入" in body["reason"]
 
 
-@pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
+@pytest.mark.skipif(not RAW.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_quality_bridge_links_to_active_batch(client):
     with RAW.open("rb") as fh:
         imported = client.post(
@@ -190,7 +192,7 @@ def test_quality_bridge_links_to_active_batch(client):
     assert "不在目前匯入批次" in bad["reason"]
 
 
-@pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
+@pytest.mark.skipif(not RAW.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_equipment_options_come_from_active_batch(client):
     with RAW.open("rb") as fh:
         client.post(
@@ -204,10 +206,10 @@ def test_equipment_options_come_from_active_batch(client):
     assert None not in codes
 
 
-V2 = RAW.parent / "數據庫-1008.xlsx"
+V2 = DATA
 
 
-@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_item_inspection_feeds_check_monitor(client):
     with V2.open("rb") as fh:
         imported = client.post(
@@ -247,7 +249,7 @@ def test_item_inspection_feeds_check_monitor(client):
     assert bad.status_code == 400
 
 
-@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_history_includes_pcn_and_plant_wide_ecn(client):
     with V2.open("rb") as fh:
         client.post(
@@ -269,7 +271,7 @@ def test_history_includes_pcn_and_plant_wide_ecn(client):
     assert sorted(c["kind"] for c in pcn_op["changes"]) == ["ECN", "PCN"]
 
 
-@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_photo_upload_records_inspection(client):
     with V2.open("rb") as fh:
         client.post(
@@ -345,7 +347,7 @@ def test_shift_of():
 
 
 # V3 定義在檔案後段，裝飾器在定義當下求值，這裡直接寫路徑
-@pytest.mark.skipif(not (RAW.parent / "數據庫-1011.xlsx").exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not DATA.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_photo_inspection_dashboard(client):
     """點檢儀表板：拍照點檢紀錄（帶時區的 UTC）、依站別統計、匯出用廠區時間、刪除連同照片。"""
     import datetime as dt
@@ -433,7 +435,7 @@ def test_photo_inspection_dashboard(client):
     assert client.get("/api/v1/check-inspections/export").status_code == 404
 
 
-@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_events_level_after_filter(client):
     with V2.open("rb") as fh:
         client.post(
@@ -449,7 +451,7 @@ def test_events_level_after_filter(client):
     assert l3["levelCounts"] == counts
 
 
-@pytest.mark.skipif(not V2.exists(), reason="數據庫-1008.xlsx 不存在")
+@pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_level_changes_window_kind_and_paging(client):
     import datetime as dt
     import math
@@ -499,7 +501,7 @@ def test_level_changes_window_kind_and_paging(client):
     assert client.get("/api/v1/level-changes", params={"window": "decade"}).status_code == 422
 
 
-V3 = RAW.parent / "數據庫-1011.xlsx"
+V3 = DATA
 
 
 def _import_v3(client):
@@ -512,63 +514,66 @@ def _import_v3(client):
     return res.json()
 
 
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_complaints_list_and_summary(client):
     report = _import_v3(client)["report"]
-    assert report["rowCounts"]["complaints"] == 8  # 序號 1–6、8、9；範本列與字典列略過
+    assert report["rowCounts"]["complaints"] == 1  # 1019 版只留序號 1（已對應 KPOV 的客訴）
 
     listing = client.get("/api/v1/complaints").json()
-    assert listing["total"] == 8 and len(listing["items"]) == 8
-    by_seq = {c["seq"]: c for c in listing["items"]}
-    assert by_seq[8]["complainedAt"].startswith("2026-07-10")  # 文字日期
-    assert by_seq[2]["doneAt"] is None  # 「1.NA 2.2026/7/24」尚未全部完成
-    assert by_seq[2]["plannedAt"].startswith("2026-11-03")  # 多項取最晚
-    assert by_seq[1]["kpovNo"] == "K00004" and by_seq[2]["kpovNo"] is None  # #N/A -> 空
-    assert client.get("/api/v1/complaints", params={"q": "sharp"}).json()["total"] == 2
-    paged = client.get("/api/v1/complaints", params={"pageSize": 3, "page": 3}).json()
-    assert paged["pages"] == 3 and len(paged["items"]) == 2
+    assert listing["total"] == 1
+    c = listing["items"][0]
+    assert (c["seq"], c["kpovNo"], c["equipmentCode"]) == (1, "K00004", "OT00420118")
+    assert c["complainedAt"].startswith("2026-05-11")
+    # 1019 版新增：緊急措施／緊急措施時間；長期措施＝改善措施／改善時間
+    assert c["emergencyMeasure"].startswith("1. 已導入使用智能電鎖")
+    assert c["emergencyMeasureAt"].startswith("2026-05-11") and c["emergencyMeasureAt"].endswith("+00:00")
+    assert c["improvement"] == "鎖付角度DOE優化，得出最佳參數保護"
+    assert c["improvementAt"].startswith("2025-12-05")
+    # 8D：改善前 Level 3、改善後 Level 1；KPIV 管控等級 E -> A
+    d8 = c["eightD"]
+    assert (d8["before"]["level"], d8["after"]["level"]) == (3, 1)
+    assert (d8["before"]["kpiv"]["level"], d8["after"]["kpiv"]["level"]) == ("E", "A")
+    assert d8["measures"]["owner"] == "劉鎮鑫" and d8["measures"]["doneAt"].startswith("2025-12-05")
+    assert client.get("/api/v1/complaints", params={"q": "螺絲"}).json()["total"] == 1
+    assert client.get(f"/api/v1/complaints/{c['id']}").json()["eightD"] == d8
+    assert client.get("/api/v1/complaints/999999").status_code == 404
 
     summary = client.get("/api/v1/complaints/summary").json()
-    # 每格只有一個數字：依改善後 Level（目前狀態）
     counts = summary["levelCounts"]
-    assert {k: counts[k] for k in "0123"} == {"0": 3, "1": 4, "2": 1, "3": 0} and counts["total"] == 8
-    mapped = [r for r in summary["items"] if r["mapped"]]
-    assert len(mapped) == 1
-    row = mapped[0]
-    assert (row["station"], row["kpovNo"], row["complaintCount"]) == ("鎖銅排", "K00004", 1)
-    assert sum(r["complaintCount"] for r in summary["items"]) == 8
-    # 客訴：Level(原)＝改善前；Level(變化後)＝改善前→改善後；措施層別讀 Excel（序號 1：AC、AD 欄有填）
+    assert {k: counts[k] for k in "0123"} == {"0": 0, "1": 1, "2": 0, "3": 0} and counts["total"] == 1
+    row = summary["items"][0]
+    assert row["mapped"] and (row["station"], row["kpovNo"], row["complaintCount"]) == ("鎖銅排", "K00004", 1)
     assert row["levelOrig"]["after"] == 3
     assert (row["levelChanged"]["before"], row["levelChanged"]["after"]) == (3, 1)
-    assert row["layer"]["editable"] is False
-    assert row["layer"]["summary"] == "技術解・KPOV：設備攔截；KPIV：防呆防錯"
-    assert row["emergency"]["text"] == "導入智能機械手臂自動鎖付"
+    # 措施表：緊急措施＝緊急措施欄；長期措施＝改善措施／改善時間；措施層別讀 Excel（AC、AD 欄有填）
+    assert row["emergency"] == {"text": c["emergencyMeasure"], "at": c["emergencyMeasureAt"]}
+    assert row["longTerm"] == {"text": c["improvement"], "at": c["improvementAt"]}
+    assert row["layer"] == {"summary": "技術解・KPOV：設備攔截；KPIV：防呆防錯"}
     assert row["improvedAt"].startswith("2025-12-05") and not row["improvePlanned"]
-    # 序號 6：實際完成未填、預計 2026/9/10 已過 -> 預計且逾期
-    overdue = [r for r in summary["items"] if r["improveOverdue"]]
-    assert overdue and all(r["improvePlanned"] for r in overdue)
+    assert row["complaintId"] == c["id"]
 
-    # 有篩選時只計入對應到範圍內 KPOV 的客訴
     scoped = client.get("/api/v1/complaints/summary", params={"target": "equip:OT00420118"}).json()
     assert scoped["levelCounts"]["total"] == 1 and scoped["total"] == 1
 
 
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_process_summary_and_repairs_list(client):
     _import_v3(client)
     repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()
-    assert repairs["total"] == 27
+    assert repairs["total"] == 28
     assert client.get("/api/v1/repairs", params={"q": "K00057"}).json()["total"] > 0
 
     summary = client.get("/api/v1/process/summary").json()
     assert summary["pageSize"] == 10 and len(summary["items"]) <= 10
     counted = sum(summary["levelCounts"]["current"].values())
     assert counted == summary["levelCounts"]["total"]
-    # 對得到 KPOV 的維修都要進到彙總（K00051/A0003 對不到 KPOV，不列入）
-    assert summary["levelCounts"]["total"] == 25
+    # 對得到 KPOV 的維修都要進到彙總（對不到 KPOV 的不列入）
+    states = {(r["kpovNo"], r["equipmentCode"]) for r in client.get("/api/v1/kpov", params={"pageSize": 500}).json()["items"]}
+    mapped_total = sum(1 for r in repairs["items"] if (r["kpovNo"], r["equipmentCode"]) in states)
+    assert summary["levelCounts"]["total"] == mapped_total == 26
     # 每筆維修一列
     full = client.get("/api/v1/process/summary", params={"pageSize": 50}).json()
-    assert full["total"] == 25 and len(full["items"]) == 25
+    assert full["total"] == 26 and len(full["items"]) == 26
     row = next(r for r in full["items"] if r["repairSerial"] == "ALG25B01310WB")
     history = client.get(f"/api/v1/kpov/{row['kpovNo']}/{row['equipmentCode']}/history").json()["events"]
     mine = {e["type"]: e for e in history if e["repairSerial"] == "ALG25B01310WB"}
@@ -579,67 +584,35 @@ def test_process_summary_and_repairs_list(client):
     assert (row["levelChanged"]["before"], row["levelChanged"]["after"]) == (
         mine["IMPROVE"]["levelBefore"], mine["IMPROVE"]["levelAfter"],
     )
-    assert row["emergency"]["at"].startswith("2025-11-17T09:20")  # 修復時間
-    assert row["longTerm"] is None and row["complaintCount"] == 0
-    assert row["layer"]["editable"] is False
+    # 1019 版：緊急措施＝BM／BN；長期措施＝BR 改善措施／BQ 改善時間；措施層別讀 8D 區塊（AN–AP 有填）
+    assert row["emergency"] == {"text": "下個人工站及總檢加強檢驗(異常處打點)", "at": "2025-11-17T00:00:00+00:00"}
+    assert row["longTerm"] == {"text": "鎖付角度DOE優化，得出最佳參數保護", "at": "2025-11-17T00:00:00+00:00"}
+    assert row["layer"] == {"summary": "技術解・KPOV：設備攔截；KPIV：防呆防錯、智能監控"}
+    assert row["complaintCount"] == 0
+    detail = client.get(f"/api/v1/repairs/{row['repairId']}").json()
+    assert detail["serialNo"] == "ALG25B01310WB" and detail["emergencyMeasure"] == row["emergency"]["text"]
+    assert (detail["eightD"]["before"]["level"], detail["eightD"]["after"]["level"]) == (2, 0)
+    assert detail["eightD"]["measures"]["owner"] == "肖華陽"
+    assert client.get("/api/v1/repairs/999999").status_code == 404
 
 
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
-def test_emergency_measure_classification(client):
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
+def test_layer_is_read_only_from_excel(client):
+    """措施層別一律讀 Excel 的 8D 區塊，系統內手動分類的 API 已移除。"""
     _import_v3(client)
-    escalated = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
-    row = next(i for i in escalated if i["repairSerial"])
-    assert row["complaintCount"] == 0 and row["layer"]["measure"] is None
-    assert row["layer"]["editable"] is True
-    improved = client.get("/api/v1/level-changes", params={"window": "year", "kind": "improved"}).json()["items"]
-    assert improved and all(i["layer"]["editable"] is False for i in improved)
-
-    key = {"repairSerial": row["repairSerial"], "kpovNo": row["kpovNo"], "equipmentCode": row["equipmentCode"]}
-
-    def save(**body):
-        return client.put("/api/v1/emergency-measures", json={**key, **body})
-
-    def current():
-        items = client.get("/api/v1/level-changes", params={"window": "year", "pageSize": 50}).json()["items"]
-        return next(
-            i["layer"]["measure"]
-            for i in items
-            if (i["repairSerial"], i["kpovNo"], i["equipmentCode"])
-            == (key["repairSerial"], key["kpovNo"], key["equipmentCode"])
-        )
-
-    assert save(solutionType="technical", techTarget="KPOV", designElimination=True).status_code == 200
-    m = current()
-    assert (m["solutionType"], m["techTarget"], m["designElimination"], m["equipmentInterception"]) == (
-        "technical", "KPOV", True, False,
-    )
-
-    # 改成 KPIV：KPOV 的兩個框要被清掉
-    save(solutionType="technical", techTarget="KPIV", designElimination=True, smartMonitoring=True)
-    m = current()
-    assert m["techTarget"] == "KPIV" and m["smartMonitoring"] and not m["designElimination"]
-
-    # 改成管理解：技術欄位清空
-    assert save(solutionType="management", managementNote="  加強稽核頻率  ").status_code == 200
-    m = current()
-    assert m["solutionType"] == "management" and m["managementNote"] == "加強稽核頻率"
-    assert m["techTarget"] is None and not m["smartMonitoring"]
-
-    assert save(solutionType="management", managementNote="   ").status_code == 422
-    assert save(solutionType="technical").status_code == 422
-    assert save(solutionType="other").status_code == 422
-    missing = client.put(
+    gone = client.put(
         "/api/v1/emergency-measures",
-        json={**key, "repairSerial": "NOPE", "solutionType": "management", "managementNote": "x"},
+        json={"repairSerial": "x", "kpovNo": "K00004", "equipmentCode": "OT00420118", "solutionType": "management"},
     )
-    assert missing.status_code == 404
+    assert gone.status_code in (404, 405)
+    changes = client.get("/api/v1/level-changes", params={"window": "year", "kind": "escalated"}).json()
+    assert changes["items"]
+    for row in changes["items"]:
+        assert set(row["layer"]) == {"summary"}
+        assert set(row["emergency"]) == {"text", "at"} and set(row["longTerm"]) == {"text", "at"}
 
-    # 不掛批次：重新匯入後分類仍在
-    _import_v3(client)
-    assert current()["managementNote"] == "加強稽核頻率"
 
-
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_station_risk_counts(client):
     import collections
     import datetime as dt
@@ -656,9 +629,9 @@ def test_station_risk_counts(client):
         if r["testedAt"] and since <= dt.datetime.fromisoformat(r["testedAt"]) <= now
     )
     assert {code: v["repairs"] for code, v in year["stations"].items() if v["repairs"]} == dict(expected)
-    # 只有序號 1 的客訴填了設備（OT00420118），其餘 7 筆未對應站別
+    # 1019 版客訴報表只有序號 1（OT00420118），沒有未對應站別的客訴
     assert year["stations"]["OT00420118"]["complaints"] == 1
-    assert year["unmappedComplaints"] == 7
+    assert year["unmappedComplaints"] == 0
     # 最嚴重 Level：OT00420118 有序號 1 的客訴（改善前 Level 3）-> 3
     assert year["stations"]["OT00420118"]["worstLevel"] == 3
     # 只有維修的站：worstLevel 為該站各筆維修惡化事件後 Level 的最大值
@@ -681,7 +654,7 @@ def test_station_risk_counts(client):
     assert client.get("/api/v1/station-risk", params={"window": "decade"}).status_code == 422
 
 
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_station_level_charts(client):
     """站別柱狀圖：KPOV 原始 Level 分佈；期間內客訴／維修筆數依發生當時 Level，與風險地圖一致。"""
     _import_v3(client)
@@ -707,7 +680,7 @@ def test_station_level_charts(client):
     assert total_repairs + events["unknownLevel"]["repairs"] == sum(r["repairs"] for r in risk["stations"].values())
     # 序號 1 的客訴：OT00420118、改善前 Level 3
     assert by_code["OT00420118"]["complaints"]["3"] == 1
-    assert events["unmappedComplaints"] == 7
+    assert events["unmappedComplaints"] == 0
 
     # 篩選：只看 OP 站時不會出現 CTP 設備
     op = client.get("/api/v1/station-levels/events", params={"window": "year", "attribute": "OP"}).json()
@@ -716,7 +689,7 @@ def test_station_level_charts(client):
     assert all(not any(s["repairs"].values()) for s in day["stations"])
 
 
-@pytest.mark.skipif(not V3.exists(), reason="數據庫-1011.xlsx 不存在")
+@pytest.mark.skipif(not V3.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_window_filters_quadrant_and_tracking(client):
     """期間篩選連動：象限圖母體為全部 KPOV，start＝期間第一天當時的分佈；客訴、製程追蹤依日期篩選。"""
     import collections
@@ -767,10 +740,55 @@ def test_window_filters_quadrant_and_tracking(client):
     # 客訴、製程追蹤依日期篩選
     c_all = client.get("/api/v1/complaints/summary").json()
     c_day = client.get("/api/v1/complaints/summary", params={"window": "day"}).json()
-    assert c_all["levelCounts"]["total"] == 8 and c_day["levelCounts"]["total"] == 0 and c_day["total"] == 0
+    assert c_all["levelCounts"]["total"] == 1 and c_day["levelCounts"]["total"] == 0 and c_day["total"] == 0
     p_all = client.get("/api/v1/process/summary").json()
     p_month = client.get("/api/v1/process/summary", params={"window": "month", "pageSize": 50}).json()
     month_since = now - dt.timedelta(days=30)
     assert all(month_since <= at(r["occurredAt"]) for r in p_month["items"])
     assert p_month["total"] < p_all["total"]
     assert client.get("/api/v1/quadrant", params={"window": "decade"}).status_code == 422
+
+
+@pytest.mark.skipif(not DATA.exists(), reason="數據庫-1019.xlsx 不存在")
+def test_check_items_1019_control_level_and_once_per_shift(client):
+    """1019 版高風險項點檢：KPIV(x) 點檢內容與管控等級；「開線/班」每班只算 1 格，巡檢 2h 維持多格。"""
+    report = _import_v3(client)["report"]
+    assert report["rowCounts"]["checkItems"] == 10
+    items = client.get("/api/v1/check-monitor").json()["items"]
+    assert len(items) == 10
+    assert all(i["kpivControlLevel"] for i in items)
+    smart = [i for i in items if i["kpivControlLevel"].startswith("A")]
+    assert [i["equipmentCode"] for i in smart] == ["OT00420108"]  # 鎖軟銅排2 改為 CTP 設備
+    for i in items:
+        if "巡檢" in (i["frequency"] or ""):
+            assert i["intervalHours"] == 2.0 and len(i["slots"]) == 5
+        else:
+            assert i["intervalHours"] == 10.0 and len(i["slots"]) == 1
+
+
+@pytest.mark.skipif(not DATA.exists(), reason="數據庫-1019.xlsx 不存在")
+def test_dashboard_hides_records_of_retired_items(client):
+    """點檢內容改版後，舊項目底下的拍照點檢紀錄不在儀表板顯示（使用者決定只看新項目）。"""
+    from app.db import SessionLocal
+    from app.models import CheckPhotoInspection
+
+    _import_v3(client)
+    station = client.get("/api/v1/check-items").json()["stations"][0]
+    item = client.get("/api/v1/check-items", params={"station": station}).json()["items"][0]
+    with SessionLocal() as s:
+        s.add_all(
+            [
+                CheckPhotoInspection(
+                    equipment_code=item["equipmentCode"], kpov_no=item["kpovNo"], check_content=item["checkContent"],
+                    status="ok", photo_url="/api/ar/uploads/checks/new.png",
+                ),
+                CheckPhotoInspection(
+                    equipment_code=item["equipmentCode"], kpov_no=item["kpovNo"], check_content="生產時是否有進行數量管控",
+                    status="ok", photo_url="/api/ar/uploads/checks/old.png",
+                ),
+            ]
+        )
+        s.commit()
+    listed = client.get("/api/v1/check-inspections").json()
+    assert listed["total"] == 1 and listed["items"][0]["checkContent"] == item["checkContent"]
+    assert sum(r["total"] for r in client.get("/api/v1/check-inspections/stats").json()) == 1

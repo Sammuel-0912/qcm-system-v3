@@ -6,7 +6,9 @@ import sqlite3
 
 import pytest
 
-RAW = pathlib.Path(__file__).resolve().parent.parent.parent / "raw_data.xlsx"
+# v3 只以數據庫-1019 為準（不再相容 1008／1011／raw_data 的測試）
+DATA = pathlib.Path(__file__).resolve().parent.parent.parent / "數據庫-1019.xlsx"
+RAW = DATA
 
 OLD_SCHEMA = """
 CREATE TABLE import_batch (
@@ -24,7 +26,7 @@ CREATE TABLE fact_kpov (
 """
 
 
-@pytest.mark.skipif(not RAW.exists(), reason="raw_data.xlsx 不存在")
+@pytest.mark.skipif(not RAW.exists(), reason="數據庫-1019.xlsx 不存在")
 def test_old_schema_is_migrated_and_op_rows_import(tmp_path):
     db = tmp_path / "old.db"
     con = sqlite3.connect(db)

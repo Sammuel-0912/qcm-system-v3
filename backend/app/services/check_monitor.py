@@ -185,6 +185,7 @@ def monitor_rows(
                 "kpovName": item.kpov_name,
                 "level": item.level_source,
                 "checkContent": item.check_content,
+                "kpivControlLevel": item.kpiv_control_level,
                 "frequency": item.frequency,
                 "intervalHours": float(item.interval_hours or 2),
                 "status": status,

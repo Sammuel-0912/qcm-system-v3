@@ -20,7 +20,6 @@ from ...importer.excel import ImportError_, import_workbook
 from ...models import (
     CheckPhotoInspection,
     DimEquipment,
-    EmergencyMeasure,
     FactChangeRecord,
     FactCheckItem,
     FactComplaint,
@@ -28,10 +27,12 @@ from ...models import (
     FactRepair,
     ImportBatch,
 )
-from ...services.measure_rows import events_by_repair, measure_out, measures_for, repair_row
+from ...services.measure_rows import events_by_repair, repair_row
+from ...importer.mapping import REPAIR_EIGHT_D_PREFIX as M_REPAIR_PREFIX
+from ...services.eight_d import eight_d_out
 from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
-from ...services.check_monitor import check_items, monitor_rows, shift_of, shift_payload, summarize_rows, utc
+from ...services.check_monitor import check_items, item_key, monitor_rows, shift_of, shift_payload, summarize_rows, utc
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
@@ -489,7 +490,6 @@ def list_level_changes(
         else {}
     )
     events = events_by_repair(session, batch.id)
-    measures = measures_for(session, list(repairs.values()))
 
     items = []
     for e in page_items:
@@ -500,9 +500,6 @@ def list_level_changes(
             repair,
             states_by_key.get((e.kpov_no, e.equipment_code)),
             events.get(repair.id, {}),
-            measures.get((repair.serial_no, repair.kpov_no, repair.equipment_code)),
-            # 只有高風險列可編輯措施層別；已改善列只顯示同一份分類
-            editable=kind == "escalated",
             now=now,
         )
         row["transition"] = e.transition
@@ -597,86 +594,6 @@ def get_station_event_levels(
     return event_levels(session, batch.id, window, scoped)
 
 
-# --------------------------------------------------------------------------- 緊急措施分類
-
-
-class EmergencyMeasureIn(BaseModel):
-    repair_serial: str = Field(alias="repairSerial", min_length=1)
-    kpov_no: str = Field(alias="kpovNo", min_length=1)
-    equipment_code: str = Field(alias="equipmentCode", min_length=1)
-    solution_type: str = Field(alias="solutionType", pattern="^(technical|management)$")
-    tech_target: str | None = Field(None, alias="techTarget", pattern="^(KPOV|KPIV)$")
-    design_elimination: bool = Field(False, alias="designElimination")
-    equipment_interception: bool = Field(False, alias="equipmentInterception")
-    foolproof: bool = False
-    smart_monitoring: bool = Field(False, alias="smartMonitoring")
-    management_note: str | None = Field(None, alias="managementNote")
-
-
-@router.put("/emergency-measures")
-def save_emergency_measure(data: EmergencyMeasureIn, session: Session = Depends(get_session)):
-    """儲存一筆高風險異動的緊急措施分類（upsert）。
-
-    技術解／管理解二選一；技術解再分 KPOV 或 KPIV，只保留該分類的兩個勾選項，
-    切換分類時另一組一律清除，避免資料庫留下互相矛盾的組合。
-    """
-    batch = _batch_or_404(session)
-    exists = session.scalar(
-        select(FactRepair.id).where(
-            FactRepair.batch_id == batch.id,
-            FactRepair.serial_no == data.repair_serial,
-            FactRepair.kpov_no == data.kpov_no,
-            FactRepair.equipment_code == data.equipment_code,
-        )
-    )
-    if exists is None:
-        raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
-
-    fields = {
-        "solution_type": data.solution_type,
-        "tech_target": None,
-        "design_elimination": False,
-        "equipment_interception": False,
-        "foolproof": False,
-        "smart_monitoring": False,
-        "management_note": None,
-    }
-    if data.solution_type == "technical":
-        if not data.tech_target:
-            raise HTTPException(status_code=422, detail="技術解需選擇 KPOV 或 KPIV")
-        fields["tech_target"] = data.tech_target
-        if data.tech_target == "KPOV":
-            fields["design_elimination"] = data.design_elimination
-            fields["equipment_interception"] = data.equipment_interception
-        else:
-            fields["foolproof"] = data.foolproof
-            fields["smart_monitoring"] = data.smart_monitoring
-    else:
-        note = (data.management_note or "").strip()
-        if not note:
-            raise HTTPException(status_code=422, detail="管理解請填寫內容")
-        fields["management_note"] = note
-
-    measure = session.scalars(
-        select(EmergencyMeasure).where(
-            EmergencyMeasure.repair_serial == data.repair_serial,
-            EmergencyMeasure.kpov_no == data.kpov_no,
-            EmergencyMeasure.equipment_code == data.equipment_code,
-        )
-    ).first()
-    if measure is None:
-        measure = EmergencyMeasure(
-            repair_serial=data.repair_serial, kpov_no=data.kpov_no, equipment_code=data.equipment_code, **fields
-        )
-        session.add(measure)
-    else:
-        for key, value in fields.items():
-            setattr(measure, key, value)
-        measure.updated_at = dt.datetime.now(dt.timezone.utc)
-    session.commit()
-    return measure_out(measure)
-
-
 # --------------------------------------------------------------------------- 客訴／製程問題追蹤
 
 
@@ -735,6 +652,11 @@ def _matches(q: str | None, *values) -> bool:
     return any(needle in str(v).lower() for v in values if v is not None)
 
 
+def _iso_utc(value: dt.datetime | None) -> str | None:
+    """帶時區的 UTC ISO 字串（SQLite 讀回不帶時區）。"""
+    return utc(value).isoformat() if value else None
+
+
 def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
     out = {
         "id": c.id,
@@ -756,8 +678,14 @@ def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
         "effectiveness": c.effectiveness,
         "equipmentCode": c.equipment_code,
         "kpovNo": c.kpov_no,
+        # 1019 版起：緊急措施；長期措施＝改善措施／改善時間
+        "emergencyMeasure": c.emergency_measure,
+        "emergencyMeasureAt": _iso_utc(c.emergency_measure_at),
+        "improvement": c.improvement,
+        "improvementAt": _iso_utc(c.improvement_effective_at),
     }
     if full:
+        out["eightD"] = eight_d_out(c)
         out.update(
             {
                 "site": c.site,
@@ -847,6 +775,8 @@ def list_repairs(
                 "kpovNo": r.kpov_no,
                 "kpovName": name,
                 "defectDesc": r.product_defect_desc or r.defect_desc,
+                "emergencyMeasure": r.emergency_measure,
+                "emergencyMeasureAt": _iso_utc(r.emergency_measure_at),
                 "improvement": r.improvement,
                 "improvedAt": improve_at.isoformat() if improve_at else None,
                 "improvePlanned": bool(improve_at and improve_at > now),
@@ -855,6 +785,54 @@ def list_repairs(
             }
         )
     return paginate(rows, page, page_size)
+
+
+@router.get("/repairs/{repair_id}")
+def get_repair(repair_id: int, session: Session = Depends(get_session)):
+    """單筆維修明細：基本資料、緊急措施、長期措施（改善措施／改善時間）與 8D 內容。"""
+    batch = _batch_or_404(session)
+    r = session.get(FactRepair, repair_id)
+    if r is None or r.batch_id != batch.id:
+        raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
+    return {
+        "id": r.id,
+        "serialNo": r.serial_no,
+        "month": r.month,
+        "productModel": r.product_model,
+        "workOrder": r.work_order,
+        "line": r.line,
+        "team": r.team,
+        "testedAt": _iso_utc(r.tested_at),
+        "defectDesc": r.defect_desc,
+        "productDefectDesc": r.product_defect_desc,
+        "repairPartLocation": r.repair_part_location,
+        "responsibility": r.responsibility,
+        "defectCause": r.defect_cause,
+        "subCategory": r.sub_category,
+        "technician": r.technician,
+        "repairedAt": _iso_utc(r.repaired_at),
+        "countermeasure": r.countermeasure,
+        "responsibleDept": r.responsible_dept,
+        "remark": r.remark,
+        "station": r.station,
+        "equipmentCode": r.equipment_code,
+        "kpovNo": r.kpov_no,
+        "emergencyMeasure": r.emergency_measure,
+        "emergencyMeasureAt": _iso_utc(r.emergency_measure_at),
+        "improvement": r.improvement,
+        "improvementAt": _iso_utc(r.improvement_effective_at),
+        "eightD": eight_d_out(r, M_REPAIR_PREFIX),
+    }
+
+
+@router.get("/complaints/{complaint_id}")
+def get_complaint(complaint_id: int, session: Session = Depends(get_session)):
+    """單筆客訴明細（含 8D 內容）。"""
+    batch = _batch_or_404(session)
+    c = session.get(FactComplaint, complaint_id)
+    if c is None or c.batch_id != batch.id:
+        raise HTTPException(status_code=404, detail="找不到這筆客訴，請重新整理後再試")
+    return _complaint_out(c, full=True)
 
 
 @router.post("/import")
@@ -1017,6 +995,10 @@ def _photo_records(
     if equipment_code:
         stmt = stmt.where(CheckPhotoInspection.equipment_code == equipment_code)
     records = session.scalars(stmt).all()
+    # 只列目前生效批次的點檢項目底下的紀錄：點檢內容改版後，舊項目的紀錄不再顯示（使用者決定）
+    batch = active_batch(session)
+    current = {item_key(i.equipment_code, i.kpov_no, i.check_content) for i in check_items(session, batch.id)} if batch else set()
+    records = [r for r in records if item_key(r.equipment_code, r.kpov_no, r.check_content) in current]
     # 時間篩選在 Python 端做：SQLite 存的是不帶時區的 UTC，直接在 SQL 比較帶時區的參數不可靠
     if start is not None:
         records = [r for r in records if utc(r.inspected_at) >= utc(start)]
