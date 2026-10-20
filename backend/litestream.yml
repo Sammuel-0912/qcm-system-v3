@@ -1,0 +1,15 @@
+# Litestream：把 SQLite 持續備份到 S3 相容儲存（Cloudflare R2），容器重開時再還原。
+# 只在 QCM_LITESTREAM=1 時由 docker-entrypoint.sh 啟用（Cloudflare 部署）；VM／Zeabur 不用。
+# 連線資訊與照片儲存共用同一組 QCM_S3_* 環境變數（同一個 R2 bucket，資料庫放在 db/ 底下）。
+dbs:
+  - path: /app/data/qcm.db
+    replica:
+      type: s3
+      bucket: ${QCM_S3_BUCKET}
+      path: db
+      endpoint: ${QCM_S3_ENDPOINT}
+      region: ${QCM_S3_REGION}
+      access-key-id: ${QCM_S3_ACCESS_KEY_ID}
+      secret-access-key: ${QCM_S3_SECRET_ACCESS_KEY}
+      # R2 與本機測試用的 SeaweedFS 都接受 path-style 網址
+      force-path-style: true

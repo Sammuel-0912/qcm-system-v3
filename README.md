@@ -20,7 +20,7 @@
 ```bash
 # 後端
 cd backend
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt   # 後者為測試用套件
 uvicorn app.main:app --reload --port 8000
 
 # 前端（另開一個終端）
@@ -31,18 +31,14 @@ npm run dev          # http://localhost:5173，已設定 /api 轉發到 8000
 
 開啟前端後點右上角「匯入資料」，上傳 `raw_data.xlsx` 即可。
 
-## 正式部署（Linux VM）
+## 正式部署
 
-```bash
-cp .env.example .env             # 必改 POSTGRES_PASSWORD
-docker compose up -d --build     # http://<伺服器>:8080
-```
+| 目標 | 文件 | 說明 |
+|---|---|---|
+| **Cloudflare（v3 主要部署）** | [`DEPLOY.cloudflare.md`](./DEPLOY.cloudflare.md) | Workers＋Containers＋R2，SQLite 由 Litestream 備份到 R2，不需另開資料庫 |
+| Linux VM | [`DEPLOY.vm.md`](./DEPLOY.vm.md) | Docker Compose（PostgreSQL），可離線 `docker save` 打包 |
 
-VM 不能連外網時，在開發機 `docker save` 打包映像再搬過去，完整步驟見 [`DEPLOY.vm.md`](./DEPLOY.vm.md)。
-雲端（Zeabur）部署見 [`DEPLOY.zeabur.md`](./DEPLOY.zeabur.md)。
-
-`docker-compose.yml` 使用 PostgreSQL 16。後端以 `QCM_DATABASE_URL` 環境變數切換資料庫，
-SQLite 與 PostgreSQL 共用同一套程式碼。
+後端以 `QCM_DATABASE_URL` 切換資料庫（SQLite／PostgreSQL 共用同一套程式），照片以 `QCM_STORAGE` 切換存放位置（本機磁碟／R2）。
 
 ## 測試
 

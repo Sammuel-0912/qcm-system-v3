@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX, SITE_UTC_OFFSET_HOURS
+from ...config import SITE_UTC_OFFSET_HOURS
+from ...services.storage import get_storage, key_from_url
+from ...services.storage import url_for as storage_url_for
 from ...db import get_session
 from ...importer.excel import ImportError_, import_workbook
 from ...models import (
@@ -933,20 +935,21 @@ def create_check_inspection(
             detail=f"不支援的圖片格式 {ext}；可用：{', '.join(sorted(PHOTO_EXTENSIONS))}",
         )
 
-    folder = AR_UPLOAD_DIR / PHOTO_SUBDIR
-    folder.mkdir(parents=True, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    target = folder / filename
+    # 先讀進記憶體並檢查大小（上限 10 MB），再交給儲存層（本機磁碟或 Cloudflare R2）
+    chunks: list[bytes] = []
     size = 0
+    while chunk := file.file.read(1024 * 1024):
+        size += len(chunk)
+        if size > PHOTO_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="照片超過 10 MB，請降低解析度後再上傳")
+        chunks.append(chunk)
+    if size == 0:
+        raise HTTPException(status_code=422, detail="照片是空的，請重新拍照")
+
+    storage = get_storage()
+    key = f"{PHOTO_SUBDIR}/{uuid.uuid4().hex}{ext}"
+    storage.put(key, b"".join(chunks), file.content_type)
     try:
-        with target.open("wb") as fh:
-            while chunk := file.file.read(1024 * 1024):
-                size += len(chunk)
-                if size > PHOTO_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail="照片超過 10 MB，請降低解析度後再上傳")
-                fh.write(chunk)
-        if size == 0:
-            raise HTTPException(status_code=422, detail="照片是空的，請重新拍照")
 
         record = CheckPhotoInspection(
             equipment_code=equipment_code,
@@ -954,14 +957,14 @@ def create_check_inspection(
             check_content=content,
             status=status,
             note=(note or "").strip() or None,
-            photo_url=f"{AR_UPLOAD_URL_PREFIX}/{PHOTO_SUBDIR}/{filename}",
+            photo_url=storage_url_for(key),
         )
         session.add(record)
         session.commit()
     except BaseException:
         # 只有照片與紀錄都成功才算點檢；任一步失敗就不留孤兒檔
         session.rollback()
-        target.unlink(missing_ok=True)
+        storage.delete(key)
         raise
 
     return {
@@ -1073,28 +1076,30 @@ def check_inspection_stats(session: Session = Depends(get_session)):
 # 點檢紀錄是稽核證據，不提供刪除 API（使用者 2026-10-20 決定）。
 
 
-def _photo_path(photo_url: str | None) -> Path | None:
-    """照片網址 -> 上傳目錄內的實體檔案；不在上傳目錄底下（路徑被竄改）時回 None。"""
-    prefix = f"{AR_UPLOAD_URL_PREFIX}/"
-    if not photo_url or not photo_url.startswith(prefix):
+def _photo_bytes(photo_url: str | None) -> bytes | None:
+    """照片網址 -> 檔案內容（本機磁碟或 R2）；網址不合法或檔案不存在時回 None。"""
+    key = key_from_url(photo_url)
+    if key is None:
         return None
-    target = (AR_UPLOAD_DIR / photo_url[len(prefix) :]).resolve()
-    return target if target.is_relative_to(AR_UPLOAD_DIR.resolve()) else None
+    try:
+        return get_storage().get(key)
+    except Exception:
+        return None
 
 
 EXPORT_MAX_ROWS = 1000
 EXPORT_THUMB_WIDTH = 240
 
 
-def _thumbnail(path: Path | None):
+def _thumbnail(data: bytes | None):
     """照片縮成寬 240px 的 JPEG 供嵌入 Excel；檔案不存在或無法讀取時回 None。"""
-    if path is None or not path.is_file():
+    if not data:
         return None
     from openpyxl.drawing.image import Image as XlImage
     from PIL import Image, ImageOps
 
     try:
-        with Image.open(path) as img:
+        with Image.open(io.BytesIO(data)) as img:
             img = ImageOps.exif_transpose(img).convert("RGB")  # 手機照片依 EXIF 轉正
             img.thumbnail((EXPORT_THUMB_WIDTH, EXPORT_THUMB_WIDTH * 2))
             buffer = io.BytesIO()
@@ -1178,7 +1183,7 @@ def export_check_inspections(
         if r.status != "ok":
             ws.cell(row, 8).font = Font(bold=True, color="C00000")
 
-        image = _thumbnail(_photo_path(r.photo_url))
+        image = _thumbnail(_photo_bytes(r.photo_url))
         if image is None:
             ws.cell(row, 10).value = "照片遺失"
             ws.row_dimensions[row].height = 30

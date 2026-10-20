@@ -16,7 +16,7 @@
 > **v2.0 變更（qcm-system-v3，2026-10-20）**：資料來源改為 `數據庫-1019.xlsx`（**只支援 1019 版，不再相容 1008／1011 測試**）；
 > 修護報表與客訴報表新增**緊急措施**與 8D 區塊；措施表的緊急措施／長期措施改讀新欄位、措施層別一律讀 Excel（移除手動分類）；
 > 8D 明細側欄；高風險項點檢改為 KPIV(x) 點檢內容與管控等級、「開線/班」每班一次；點檢紀錄不可刪除；
-> 側邊導覽改名；總覽頁暫時拿掉整線 Layout；部署目標改為 Cloudflare。**v2.0 規格集中在 §14**，被取代的條文以「⚠ v2.0」標註。
+> 側邊導覽改名；總覽頁暫時拿掉整線 Layout；部署目標改為 Cloudflare（Containers＋R2，SQLite 由 Litestream 備份）。**v2.0 規格集中在 §14**，被取代的條文以「⚠ v2.0」標註。
 
 ---
 
@@ -1026,7 +1026,23 @@ v1.4（`數據庫-1011.xlsx`）：
   各頁頁首標題與導覽名稱一致。
 - **REQ-V2-NAV-03** 總覽頁**暫時拿掉 PM1 整線 Layout 圖**（`LayoutMap` 元件保留）；站別 Level 分佈與站別風險地圖照常顯示，點卡片仍可切換下方範圍。
 
-### 14.7 驗收條件（v2.0，以數據庫-1019 為準）
+### 14.7 部署：Cloudflare（REQ-V2-DEP-01 ~ 06）
+
+- **REQ-V2-DEP-01** 架構：Cloudflare Worker（`cloudflare/src/index.ts`）提供前端靜態檔（`frontend/dist`，SPA），
+  `/api/*`、`/health` 轉給後端容器（`@cloudflare/containers`，`backend/Dockerfile`）。步驟見 `DEPLOY.cloudflare.md`。
+- **REQ-V2-DEP-02** 資料庫：容器內 SQLite（`/app/data/qcm.db`，WAL 模式、busy_timeout 5 秒），由 **Litestream v0.5.17**
+  持續備份到 R2 的 `db/`（約每秒同步）；容器啟動時先 `litestream restore -if-replica-exists -if-db-not-exists` 再
+  `litestream replicate -exec` 執行後端（`QCM_LITESTREAM=1` 啟用，見 `backend/docker-entrypoint.sh`）。不使用 D1（無交易、需重寫資料層）。
+- **REQ-V2-DEP-03** 上傳檔（照片、AR 設備圖）經儲存層 `services/storage.py`：`QCM_STORAGE=local`（預設，磁碟）或 `s3`（R2，S3 相容 API，
+  `QCM_S3_ENDPOINT／BUCKET／ACCESS_KEY_ID／SECRET_ACCESS_KEY／REGION`）。對外網址一律 `/api/ar/uploads/<key>`，由後端讀出回傳；
+  key 只允許「子目錄/檔名.副檔名」，禁止 `..`。
+- **REQ-V2-DEP-04** 後端只能 1 個執行個體（`max_instances: 1`；SQLite 單一寫入者＋線上人數在記憶體），`getContainer` 固定同一名稱。
+  閒置 30 分鐘休眠（`sleepAfter`），喚醒時自 R2 還原。
+- **REQ-V2-DEP-05** R2 金鑰以 `wrangler secret put` 設定，不進版控；`cloudflare/.dev.vars` 列入 `.gitignore`。
+- **REQ-V2-DEP-06** 本機驗證：`cloudflare/docker-compose.sim.yml`（後端不掛 volume、SeaweedFS 扮演 R2、nginx 扮演 Worker 路由），
+  刪除重建後端容器後資料與照片須完整還原（Windows 的 `wrangler dev` 不支援容器）。
+
+### 14.8 驗收條件（v2.0，以數據庫-1019 為準）
 
 | # | 條件 |
 |---|---|
@@ -1037,4 +1053,6 @@ v1.4（`數據庫-1011.xlsx`）：
 | **AC-V2-5** | K00051@A0006（IOW26A00347W0）：改善不早於不良，現況 Level 0 |
 | **AC-V2-6** | `PUT /emergency-measures`、`DELETE /check-inspections/{id}` 皆不存在（404／405） |
 | **AC-V2-7** | e2e：瀏覽器開前後端，逐頁檢查並截圖存於 `docs/e2e/` |
+| **AC-V2-8** | Cloudflare 模擬：S3 模式下照片寫入 bucket 並可經 `/api/ar/uploads` 讀取；後端容器刪除重建後，資料庫（331 KPOV）與照片自 R2 還原；還原後的新寫入在下次重建後仍在 |
+| **AC-V2-9** | `wrangler deploy --dry-run` 通過（設定、容器映像建置、靜態檔） |
 

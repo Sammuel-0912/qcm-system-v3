@@ -1,0 +1,55 @@
+# 本機模擬 Cloudflare 執行環境（Windows 上 wrangler dev 不支援容器時使用）：
+#   - api：與 Cloudflare 相同的後端映像與環境變數（見 src/index.ts 的 envVars），**不掛 volume**，
+#          模擬容器磁碟是暫時的——資料只能靠 Litestream（SQLite）與 R2（照片）保存
+#   - s3：SeaweedFS，扮演 R2（S3 相容 API）
+#   - web：nginx 提供前端並把 /api 轉給 api（在 Cloudflare 由 Worker 負責）
+# 用法：docker compose -f docker-compose.sim.yml up -d --build，瀏覽器開 http://localhost:8788
+services:
+  s3:
+    image: chrislusf/seaweedfs:latest
+    command: server -s3 -dir=/data
+    ports:
+      - "18333:8333"
+
+  bucket-init:
+    build: ../backend
+    image: qcm-v3-api-sim
+    entrypoint: ["python", "-c"]
+    command:
+      - |
+        import time, boto3
+        c = boto3.client("s3", endpoint_url="http://s3:8333", aws_access_key_id="any", aws_secret_access_key="any", region_name="us-east-1")
+        for _ in range(60):
+            try:
+                c.create_bucket(Bucket="qcm-v3"); print("bucket ready"); break
+            except c.exceptions.BucketAlreadyOwnedByYou:
+                print("bucket exists"); break
+            except Exception as exc:
+                print("waiting for s3:", exc.__class__.__name__); time.sleep(2)
+    depends_on: [s3]
+
+  api:
+    image: qcm-v3-api-sim
+    environment:
+      PORT: "8000"
+      TZ: Asia/Taipei
+      QCM_SITE_UTC_OFFSET: "8"
+      QCM_LITESTREAM: "1"
+      QCM_STORAGE: s3
+      QCM_S3_ENDPOINT: http://s3:8333
+      QCM_S3_BUCKET: qcm-v3
+      QCM_S3_REGION: auto
+      QCM_S3_ACCESS_KEY_ID: any
+      QCM_S3_SECRET_ACCESS_KEY: any
+    depends_on:
+      bucket-init:
+        condition: service_completed_successfully
+
+  web:
+    build: ../frontend
+    environment:
+      PORT: 80
+      API_URL: http://api:8000
+    ports:
+      - "8788:80"
+    depends_on: [api]

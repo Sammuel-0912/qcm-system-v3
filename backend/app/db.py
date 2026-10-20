@@ -18,8 +18,12 @@ engine = create_engine(DATABASE_URL, future=True, connect_args=_connect_args)
 if DATABASE_URL.startswith("sqlite"):
 
     @event.listens_for(engine, "connect")
-    def _enable_fk(dbapi_conn, _record):  # pragma: no cover - 連線層設定
+    def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - 連線層設定
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
+        # WAL：Cloudflare 部署以 Litestream 把 SQLite 持續備份到 R2，Litestream 需要 WAL 模式；
+        # busy_timeout：Litestream 做 checkpoint 時短暫持有鎖，寫入改為等待而不是立刻報 database is locked
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+        dbapi_conn.execute("PRAGMA busy_timeout=5000")
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
