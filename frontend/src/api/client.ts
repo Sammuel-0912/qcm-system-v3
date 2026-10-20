@@ -117,18 +117,6 @@ export type StationRef = { equipmentCode: string; station: string }
 export type StationLevelCounts = Record<string, number>
 export type ChangeKind = 'escalated' | 'improved'
 
-/** 高風險異動的緊急措施分類：技術解（KPOV／KPIV）或管理解，二選一 */
-export type EmergencyMeasure = {
-  solutionType: 'technical' | 'management'
-  techTarget: 'KPOV' | 'KPIV' | null
-  designElimination: boolean
-  equipmentInterception: boolean
-  foolproof: boolean
-  smartMonitoring: boolean
-  managementNote: string | null
-  updatedAt?: string | null
-}
-
 /** 等級異動總覽：區間內的一筆惡化或改善（列內容同 MeasureRow） */
 export type LevelChangeItem = MeasureRow & {
   transition: 'ESCALATED' | 'IMPROVED'
@@ -163,18 +151,97 @@ export type MeasureRow = {
   /** 是否對應到 KPOV 庫；客訴未填設備ID／KPOV 編號者為 false */
   mapped: boolean
   levelOrig: LevelShift | null
-  /** 緊急措施（原改善措施）與緊急措施時間（維修＝修復時間；客訴＝預計完成） */
-  emergency: { text: string | null; at: string | null }
-  longTerm: string | null
-  /** 措施層別：editable 時可編輯（以 measure 為準）；唯讀時可能只有 summary（客訴讀 Excel） */
-  layer: { editable: boolean; measure: EmergencyMeasure | null; summary: string | null }
+  /** 緊急措施與緊急措施時間（修護報表 BM／BN；客訴報表同名欄） */
+  emergency: TimedText
+  /** 長期措施＝改善措施與改善時間（修護報表 BR／BQ；客訴報表同名欄） */
+  longTerm: TimedText
+  /** 措施層別：一律由 Excel 8D 區塊的管理解／技術解組成，唯讀 */
+  layer: { summary: string | null }
   levelChanged: LevelShift | null
   improvedAt: string | null
   improvePlanned: boolean
   improveOverdue: boolean
   complaintCount: number
   repairSerial: string | null
+  /** 開 8D 明細用：維修列有 repairId，客訴列有 complaintId */
+  repairId: number | null
+  complaintId: number | null
   occurredAt: string | null
+}
+
+export type TimedText = { text: string | null; at: string | null }
+
+/** 8D 區塊一側（現狀或改善後）的盤查內容 */
+export type EightDSide = {
+  bigY: { item: string | null; method: string | null; score: number | null }
+  smallY: { kpov: string | null; method: string | null; score: number | null }
+  level: number | null
+  kpiv: {
+    factor: string | null
+    foolproof: string | null
+    foolproofDesc: string | null
+    monitor: string | null
+    monitorDesc: string | null
+    level: string | null
+  }
+}
+
+/** 8D：現狀盤查 → 原因 → 改善對策 → 改善後盤查（客訴與維修共用） */
+export type EightD = {
+  processUnit: string | null
+  before: EightDSide
+  causes: { occur: string | null; escape: string | null }
+  measures: {
+    mgmtVerdict: string | null
+    mgmt: string | null
+    tech: {
+      ccscInterception: string | null
+      kpovDesignElimination: string | null
+      kpovInterception: string | null
+      kpivFoolproof: string | null
+      kpivSmart: string | null
+    }
+    content: string | null
+    owner: string | null
+    plannedText: string | null
+    doneText: string | null
+    plannedAt: string | null
+    doneAt: string | null
+    effectiveness: string | null
+  }
+  after: EightDSide
+  verdict: string | null
+}
+
+/** 單筆維修明細（GET /repairs/{id}） */
+export type RepairRecord = {
+  id: number
+  serialNo: string | null
+  month: string | null
+  productModel: string | null
+  workOrder: string | null
+  line: string | null
+  team: string | null
+  testedAt: string | null
+  defectDesc: string | null
+  productDefectDesc: string | null
+  repairPartLocation: string | null
+  responsibility: string | null
+  defectCause: string | null
+  subCategory: string | null
+  technician: string | null
+  repairedAt: string | null
+  countermeasure: string | null
+  responsibleDept: string | null
+  remark: string | null
+  station: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  emergencyMeasure: string | null
+  emergencyMeasureAt: string | null
+  improvement: string | null
+  improvementAt: string | null
+  eightD: EightD | null
 }
 
 export type ComplaintSummary = Paged<MeasureRow> & {
@@ -206,6 +273,11 @@ export type Complaint = {
   effectiveness: string | null
   equipmentCode: string | null
   kpovNo: string | null
+  emergencyMeasure: string | null
+  emergencyMeasureAt: string | null
+  improvement: string | null
+  improvementAt: string | null
+  eightD: EightD | null
   site: string | null
   plant: string | null
   causeOccur: string | null
@@ -233,6 +305,8 @@ export type RepairRow = {
   kpovNo: string | null
   kpovName: string | null
   defectDesc: string | null
+  emergencyMeasure: string | null
+  emergencyMeasureAt: string | null
   improvement: string | null
   improvedAt: string | null
   improvePlanned: boolean
@@ -290,6 +364,8 @@ export type CheckMonitorRow = {
   kpovName: string | null
   level: string | null
   checkContent: string
+  /** KPIV(x) 管控等級，例「A: 防呆防錯+智能」 */
+  kpivControlLevel: string | null
   frequency: string | null
   intervalHours: number
   status: CheckStatus
@@ -352,6 +428,8 @@ export type PhotoInspection = {
   station: string
   kpovNo: string | null
   checkContent: string
+  /** 目前點檢項目的 KPIV(x) 管控等級 */
+  kpivControlLevel: string | null
   status: 'ok' | 'warn'
   note: string | null
   photoUrl: string
@@ -403,19 +481,9 @@ export const api = {
   complaints: (p: { q?: string; page: number }) =>
     get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
   repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
-  async saveEmergencyMeasure(
-    key: { repairSerial: string; kpovNo: string; equipmentCode: string },
-    measure: Omit<EmergencyMeasure, 'updatedAt'>,
-  ) {
-    const res = await fetch(`${BASE}/emergency-measures`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...key, ...measure }),
-    })
-    const body = await res.json().catch(() => ({ detail: res.statusText }))
-    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '儲存失敗')
-    return body as EmergencyMeasure
-  },
+  /** 單筆維修／客訴明細（含 8D） */
+  repair: (id: number) => get<RepairRecord>(`/repairs/${id}`),
+  complaint: (id: number) => get<Complaint>(`/complaints/${id}`),
   stationRisk: (window: ChangeWindow) =>
     get<{
       window: ChangeWindow
@@ -462,11 +530,6 @@ export const api = {
   photoInspections: (p: { equipmentCode?: string; start?: string; end?: string }) =>
     get<{ total: number; items: PhotoInspection[] }>('/check-inspections', p),
   photoInspectionStats: () => get<PhotoInspectionStat[]>('/check-inspections/stats'),
-  async deletePhotoInspection(id: number) {
-    const res = await fetch(`${BASE}/check-inspections/${id}`, { method: 'DELETE' })
-    const body = await res.json().catch(() => ({ detail: res.statusText }))
-    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '刪除失敗')
-  },
   /** 匯出含照片的 Excel；篩選條件同列表，baseUrl 用來組出可點的原圖連結 */
   photoInspectionExportUrl: (p: { equipmentCode?: string; start?: string; end?: string; baseUrl?: string }) => {
     const search = new URLSearchParams()

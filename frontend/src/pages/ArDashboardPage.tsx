@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 
 import { api, type PhotoInspection, type PhotoInspectionStat } from '../api/client'
 import { AppShell } from '../components/AppShell'
+import { KpivLevelBadge } from '../components/KpivLevelBadge'
 import { formatLocalDateTime, localInputToIso } from '../utils/datetime'
 
 function rateTone(rate: number): string {
@@ -151,15 +152,7 @@ export default function ArDashboardPage() {
     void load()
   }, [load])
 
-  async function remove(id: number) {
-    if (!window.confirm('確定要刪除這筆點檢紀錄？照片會一併刪除，且無法復原。')) return
-    try {
-      await api.deletePhotoInspection(id)
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '刪除失敗')
-    }
-  }
+  // 點檢紀錄是稽核證據，看板只讀：不提供刪除（使用者 2026-10-20 決定）
 
   const actions = (
     <>
@@ -193,7 +186,7 @@ export default function ArDashboardPage() {
   const filtered = Boolean(equipmentCode || start || end)
 
   return (
-    <AppShell title="點檢儀表板" actions={actions}>
+    <AppShell title="點檢看板" actions={actions}>
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
@@ -294,7 +287,6 @@ export default function ArDashboardPage() {
                     <th className="py-2 pr-2 font-medium">狀態</th>
                     <th className="py-2 pr-2 font-medium">點檢時間</th>
                     <th className="py-2 pr-2 font-medium">照片</th>
-                    <th className="py-2 text-right font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -307,6 +299,7 @@ export default function ArDashboardPage() {
                           {r.kpovNo ? `${r.kpovNo} · ` : ''}
                           {r.checkContent}
                         </span>
+                        {r.kpivControlLevel && <KpivLevelBadge value={r.kpivControlLevel} />}
                         {r.note && <span className="block text-xs text-amber-700">備註：{r.note}</span>}
                       </td>
                       <td className="py-2 pr-2">
@@ -317,14 +310,6 @@ export default function ArDashboardPage() {
                       </td>
                       <td className="py-2 pr-2">
                         <Thumbnail record={r} onOpen={() => setViewing(r)} />
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          onClick={() => void remove(r.id)}
-                          className="rounded px-2 py-1 text-xs text-red-600 transition hover:bg-red-50"
-                        >
-                          刪除
-                        </button>
                       </td>
                     </tr>
                   ))}

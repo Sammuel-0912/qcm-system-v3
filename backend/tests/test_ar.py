@@ -424,15 +424,18 @@ def test_photo_inspection_dashboard(client):
     assert client.get("/api/v1/check-inspections/export", params={"equipmentCode": "NOPE"}).status_code == 404
     assert client.get("/api/v1/check-inspections/export", params={"baseUrl": "javascript:x"}).status_code == 422
 
-    # 刪除：紀錄與照片檔都消失；不存在的 id 回 404
+    # 列表帶出目前點檢項目的 KPIV 管控等級
+    assert all(i["kpivControlLevel"] == item["kpivControlLevel"] for i in items)
+
+    # 點檢紀錄不可刪除（稽核證據）：沒有刪除 API，紀錄與照片都還在
     for i in items:
         path = AR_UPLOAD_DIR / i["photoUrl"][len(AR_UPLOAD_URL_PREFIX) + 1 :]
+        assert client.delete(f"/api/v1/check-inspections/{i['id']}").status_code in (404, 405)
         assert path.exists()
-        assert client.delete(f"/api/v1/check-inspections/{i['id']}").status_code == 200
-        assert not path.exists()
-    assert client.get("/api/v1/check-inspections").json()["total"] == 0
-    assert client.delete(f"/api/v1/check-inspections/{ids[0]}").status_code == 404
-    assert client.get("/api/v1/check-inspections/export").status_code == 404
+    assert client.get("/api/v1/check-inspections").json()["total"] == 2
+    # 清掉本測試的照片，避免影響其他測試對上傳目錄的檔案數檢查
+    for i in items:
+        (AR_UPLOAD_DIR / i["photoUrl"][len(AR_UPLOAD_URL_PREFIX) + 1 :]).unlink()
 
 
 @pytest.mark.skipif(not V2.exists(), reason="數據庫-1019.xlsx 不存在")
@@ -792,3 +795,19 @@ def test_dashboard_hides_records_of_retired_items(client):
     listed = client.get("/api/v1/check-inspections").json()
     assert listed["total"] == 1 and listed["items"][0]["checkContent"] == item["checkContent"]
     assert sum(r["total"] for r in client.get("/api/v1/check-inspections/stats").json()) == 1
+
+
+@pytest.mark.skipif(not DATA.exists(), reason="數據庫-1019.xlsx 不存在")
+def test_improvement_never_precedes_its_own_defect(client):
+    """改善時間只填日期（00:00）時，不得排在同一筆維修當天稍晚的不良之前（否則現況停在惡化後等級）。"""
+    import datetime as dt
+
+    _import_v3(client)
+    history = client.get("/api/v1/kpov/K00051/A0006/history").json()
+    mine = [e for e in history["events"] if e["repairSerial"] == "IOW26A00347W0"]
+    degrade = next(e for e in mine if e["type"] == "DEGRADE")
+    improve = next(e for e in mine if e["type"] == "IMPROVE")
+    assert dt.datetime.fromisoformat(improve["effectiveAt"]) >= dt.datetime.fromisoformat(degrade["effectiveAt"])
+    # 前後等級要接得起來：改善前＝惡化後
+    assert improve["levelBefore"] == degrade["levelAfter"] == 3 and improve["levelAfter"] == 0
+    assert history["current"]["level"] == 0

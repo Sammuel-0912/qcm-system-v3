@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 
 import type { CheckMonitorResponse, CheckMonitorRow, CheckSlot, SlotState } from '../api/client'
+import { KpivLevelBadge } from './KpivLevelBadge'
 import { PhotoCheckButton } from './PhotoCheckButton'
 import { AR_MARKER_ENABLED } from '../features'
 
@@ -116,7 +117,7 @@ export function CheckMonitorTable({ data, scopeLabel, onChanged }: Props) {
               <tr className="border-b border-slate-200">
                 <th className="py-2 pr-3 font-medium">站別</th>
                 <th className="py-2 pr-3 font-medium">KPOV</th>
-                <th className="py-2 pr-3 font-medium">點檢內容</th>
+                <th className="py-2 pr-3 font-medium">KPIV(x) 點檢內容</th>
                 <th className="py-2 pr-3 font-medium">點檢頻率</th>
                 <th className="py-2 font-medium">執行狀況（本班）</th>
               </tr>
@@ -132,7 +133,14 @@ export function CheckMonitorTable({ data, scopeLabel, onChanged }: Props) {
                     <span className="block text-slate-800">{row.kpovName ?? '—'}</span>
                     <span className="font-mono text-xs text-slate-400">{row.kpovNo}</span>
                   </td>
-                  <td className="py-2 pr-3 text-slate-700">{row.checkContent}</td>
+                  <td className="py-2 pr-3 text-slate-700">
+                    {row.checkContent}
+                    {row.kpivControlLevel && (
+                      <span className="block">
+                        <KpivLevelBadge value={row.kpivControlLevel} />
+                      </span>
+                    )}
+                  </td>
                   <td className="py-2 pr-3 text-xs text-slate-500">
                     {row.frequency ?? `${row.intervalHours}h/次`}
                   </td>
@@ -177,7 +185,7 @@ export function CheckMonitorTable({ data, scopeLabel, onChanged }: Props) {
         ))}
       </div>
       <p className="mt-1.5 text-xs text-slate-400">
-        每 2 小時一格，每格 20%；同一時段點檢多次只算一次。結果來自{' '}
+        依點檢頻率切格：「開線/班」每班 1 格，「巡檢 2h/次」每 2 小時一格；同一時段點檢多次只算一次。結果來自{' '}
         <Link to="/ar/photo" className="underline hover:text-slate-600">
           拍照點檢
         </Link>

@@ -1,4 +1,4 @@
-import type { ChangeKind, ChangeWindow, LevelChangesResponse } from '../api/client'
+import type { ChangeKind, ChangeWindow, LevelChangeItem, LevelChangesResponse } from '../api/client'
 import { MeasureTable } from './MeasureTable'
 
 type Props = {
@@ -8,7 +8,8 @@ type Props = {
   kind: ChangeKind
   onKindChange: (kind: ChangeKind) => void
   onPageChange: (page: number) => void
-  onSelect: (kpovNo: string, equipmentCode: string) => void
+  /** 點列開明細側欄（8D 明細／等級歷程） */
+  onOpen: (row: LevelChangeItem) => void
 }
 
 const WINDOW_HINT: Record<ChangeWindow, string> = {
@@ -18,7 +19,7 @@ const WINDOW_HINT: Record<ChangeWindow, string> = {
   year: '近 365 天',
 }
 
-export function DeviationPanel({ data, window, kind, onKindChange, onPageChange, onSelect }: Props) {
+export function DeviationPanel({ data, window, kind, onKindChange, onPageChange, onOpen }: Props) {
   const windowHint = WINDOW_HINT[window]
   const cards: { value: ChangeKind; label: string; tone: string; active: string }[] = [
     {
@@ -66,7 +67,7 @@ export function DeviationPanel({ data, window, kind, onKindChange, onPageChange,
         <MeasureTable
           data={data}
           onPageChange={onPageChange}
-          onSelect={onSelect}
+          onOpen={onOpen}
           emptyText={`${windowHint}沒有${kind === 'escalated' ? '高風險' : '改善'}的項目。`}
         />
       </div>

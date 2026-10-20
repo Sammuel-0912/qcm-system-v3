@@ -1007,13 +1007,22 @@ def _photo_records(
     return records
 
 
-def _photo_out(record: CheckPhotoInspection, names: dict[str, str]) -> dict:
+def _control_levels(session: Session) -> dict[tuple, str | None]:
+    """目前點檢項目的 KPIV(x) 管控等級，以（設備, KPOV, 點檢內容）對應。"""
+    batch = active_batch(session)
+    if batch is None:
+        return {}
+    return {item_key(i.equipment_code, i.kpov_no, i.check_content): i.kpiv_control_level for i in check_items(session, batch.id)}
+
+
+def _photo_out(record: CheckPhotoInspection, names: dict[str, str], levels: dict[tuple, str | None]) -> dict:
     return {
         "id": record.id,
         "equipmentCode": record.equipment_code,
         "station": names.get(record.equipment_code, record.equipment_code),
         "kpovNo": record.kpov_no,
         "checkContent": record.check_content,
+        "kpivControlLevel": levels.get(item_key(record.equipment_code, record.kpov_no, record.check_content)),
         "status": record.status,
         "note": record.note,
         "photoUrl": record.photo_url,
@@ -1032,7 +1041,8 @@ def list_check_inspections(
     """點檢儀表板：拍照點檢紀錄，新到舊。start／end 為帶時區的 ISO 時間（不帶時區視為 UTC）。"""
     records = _photo_records(session, equipment_code, start, end)
     names = _station_names(session)
-    return {"total": len(records), "items": [_photo_out(r, names) for r in records[:limit]]}
+    levels = _control_levels(session)
+    return {"total": len(records), "items": [_photo_out(r, names, levels) for r in records[:limit]]}
 
 
 @router.get("/check-inspections/stats")
@@ -1060,18 +1070,7 @@ def check_inspection_stats(session: Session = Depends(get_session)):
     return rows
 
 
-@router.delete("/check-inspections/{record_id}")
-def delete_check_inspection(record_id: int, session: Session = Depends(get_session)):
-    """刪除一筆拍照點檢，照片檔一併刪除。"""
-    record = session.get(CheckPhotoInspection, record_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="找不到該筆點檢紀錄")
-    target = _photo_path(record.photo_url)
-    session.delete(record)
-    session.commit()
-    if target is not None:
-        target.unlink(missing_ok=True)
-    return {"id": record_id, "deleted": True}
+# 點檢紀錄是稽核證據，不提供刪除 API（使用者 2026-10-20 決定）。
 
 
 def _photo_path(photo_url: str | None) -> Path | None:

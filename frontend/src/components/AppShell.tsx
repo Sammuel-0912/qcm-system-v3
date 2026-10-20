@@ -5,24 +5,25 @@ import { AR_MARKER_ENABLED } from '../features'
 import { usePresence } from '../hooks/usePresence'
 
 type NavItem = { to: string; label: string; hint?: string }
-type NavGroup = { title: string; items: NavItem[] }
+/** title 為空：第一層直接列項目；有 title：顯示為第一層標題，items 縮排成第二層 */
+type NavGroup = { title?: string; hint?: string; items: NavItem[] }
 
-// 導覽結構。新增頁面只改這裡。
+// 導覽結構（平台_左邊目錄列修改方案 1015）。新增頁面只改這裡。
 const NAV: NavGroup[] = [
   {
-    title: '品質管控',
     items: [
-      { to: '/quality', label: '整線品控力總覽', hint: 'KPOV 等級分佈與異動' },
-      { to: '/complaints', label: '客訴回饋清單', hint: '客訴報表（8D）' },
-      { to: '/process', label: '製程異常清單', hint: '修護報表' },
+      { to: '/quality', label: '總覽', hint: 'Overview' },
+      { to: '/process', label: '製程風險管理', hint: 'Process Risk Mgmt' },
+      { to: '/complaints', label: '客訴案件管理', hint: 'RMA Event' },
     ],
   },
   {
-    title: 'AR 點檢',
+    title: '點檢控制中心',
+    hint: 'Inspection Control Center',
     items: [
-      { to: '/ar/dashboard', label: '點檢儀表板', hint: '良率統計與報表' },
+      { to: '/ar/dashboard', label: '點檢看板', hint: 'Dashboard' },
       ...(AR_MARKER_ENABLED ? [{ to: '/ar/devices', label: '設備管理', hint: 'Marker 與作業指引' }] : []),
-      { to: '/ar/photo', label: '拍照點檢', hint: '免掃碼，手機拍照上傳' },
+      { to: '/ar/photo', label: '拍照點檢', hint: 'Photo Verification' },
       ...(AR_MARKER_ENABLED ? [{ to: '/ar/inspect', label: 'AR 掃描點檢', hint: '需相機權限' }] : []),
     ],
   },
@@ -32,37 +33,41 @@ function isActive(pathname: string, to: string) {
   return pathname === to || pathname.startsWith(to + '/')
 }
 
+function NavLinkItem({ item, active }: { item: NavItem; active: boolean }) {
+  return (
+    <Link
+      to={item.to}
+      aria-current={active ? 'page' : undefined}
+      className={`block rounded-md px-2.5 py-2 transition ${
+        active ? 'bg-[#0086DB] text-white' : 'text-slate-700 hover:bg-slate-100'
+      }`}
+    >
+      <span className="block text-sm font-medium">{item.label}</span>
+      {item.hint && (
+        <span className={`block text-xs ${active ? 'text-sky-100' : 'text-slate-400'}`}>{item.hint}</span>
+      )}
+    </Link>
+  )
+}
+
 function SideNav() {
   const { pathname } = useLocation()
   return (
-    <nav aria-label="主要導覽" className="space-y-5 px-3 py-4">
-      {NAV.map((group) => (
-        <div key={group.title}>
-          <div className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            {group.title}
-          </div>
-          <ul className="space-y-0.5">
-            {group.items.map((item) => {
-              const active = isActive(pathname, item.to)
-              return (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    aria-current={active ? 'page' : undefined}
-                    className={`block rounded-md px-2.5 py-2 transition ${
-                      active ? 'bg-[#0086DB] text-white' : 'text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    <span className="block text-sm font-medium">{item.label}</span>
-                    {item.hint && (
-                      <span className={`block text-xs ${active ? 'text-sky-100' : 'text-slate-400'}`}>
-                        {item.hint}
-                      </span>
-                    )}
-                  </Link>
-                </li>
-              )
-            })}
+    <nav aria-label="主要導覽" className="space-y-4 px-3 py-4">
+      {NAV.map((group, gi) => (
+        <div key={group.title ?? gi}>
+          {group.title && (
+            <div className="px-2.5 pb-1.5">
+              <span className="block text-sm font-semibold text-slate-800">{group.title}</span>
+              {group.hint && <span className="block text-xs text-slate-400">{group.hint}</span>}
+            </div>
+          )}
+          <ul className={`space-y-0.5 ${group.title ? 'ml-3 border-l border-slate-200 pl-2' : ''}`}>
+            {group.items.map((item) => (
+              <li key={item.to}>
+                <NavLinkItem item={item} active={isActive(pathname, item.to)} />
+              </li>
+            ))}
           </ul>
         </div>
       ))}
@@ -70,7 +75,7 @@ function SideNav() {
   )
 }
 
-const PLATFORM_NAME = 'WJ1 DCS 品控力風險智控平台'
+export const PLATFORM_NAME = 'CNE WJ1 DCS 品控力風險智控平台'
 const PIN_KEY = 'qcm.sidebar.pinned'
 
 function readPinned(): boolean {
