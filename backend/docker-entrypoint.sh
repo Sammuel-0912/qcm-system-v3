@@ -40,6 +40,20 @@ if [ "${QCM_LITESTREAM:-0}" = "1" ]; then
   fi
   : "${QCM_S3_REGION:=auto}"
   export QCM_S3_REGION
+  # R2 的 S3 金鑰：Access Key ID 32 字元、Secret 64 字元。常見錯誤是貼成 Token value，
+  # 那樣 R2 只會回「length 48, should be 32」且容器不斷重啟，這裡先給清楚的訊息。
+  case "${QCM_S3_ENDPOINT:-}" in
+    *r2.cloudflarestorage.com*)
+      if [ "${#QCM_S3_ACCESS_KEY_ID}" -ne 32 ]; then
+        echo "[entrypoint] R2 Access Key ID 應為 32 個字元，目前是 ${#QCM_S3_ACCESS_KEY_ID} 個（是否貼成了 Token value？）。請重新 wrangler secret put QCM_S3_ACCESS_KEY_ID" >&2
+        exit 1
+      fi
+      if [ "${#QCM_S3_SECRET_ACCESS_KEY}" -ne 64 ]; then
+        echo "[entrypoint] R2 Secret Access Key 應為 64 個字元，目前是 ${#QCM_S3_SECRET_ACCESS_KEY} 個。請重新 wrangler secret put QCM_S3_SECRET_ACCESS_KEY" >&2
+        exit 1
+      fi
+      ;;
+  esac
   echo "[entrypoint] 從 R2 還原資料庫（若有備份）…"
   as_app litestream restore -config /etc/litestream.yml -if-replica-exists -if-db-not-exists "$DB_PATH"
   echo "[entrypoint] 啟動後端，Litestream 持續備份到 R2"

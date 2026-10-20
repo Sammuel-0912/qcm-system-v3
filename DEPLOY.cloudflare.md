@@ -76,10 +76,13 @@ npx wrangler r2 bucket create qcm-v3
    - Permissions：**Object Read & Write**
    - Specify bucket(s)：選 **Apply to specific buckets only** → 勾 `qcm-v3`
    - TTL：Forever（或依公司規定）
-3. 按 **Create API Token**，畫面會顯示：
-   - **Access Key ID**
-   - **Secret Access Key**（**只會顯示這一次**，請立刻複製保存）
+3. 按 **Create API Token**，畫面會顯示好幾個值，**要用的是「S3 用戶端」那一區**：
+   - **Access Key ID**：**32 個字元**
+   - **Secret Access Key**：**64 個字元**（**只會顯示這一次**，請立刻複製保存）
    - S3 endpoint：`https://<Account ID>.r2.cloudflarestorage.com`
+
+   > ⚠ 同一頁最上面的 **Token value** 是 Cloudflare API 權杖，**不是** S3 金鑰，不要拿來用。
+   > 填錯時容器會啟動失敗，記錄出現 `Credential access key has length 48, should be 32`。
 
 ---
 
@@ -224,6 +227,8 @@ Dashboard → **Workers & Pages → qcm-v3 → Settings → Domains & Routes →
 | 剛部署完網站 API 回 500／502 | 容器還在配置，等 3～5 分鐘；`npx wrangler containers list` 看狀態 |
 | 閒置後第一次開很慢 | 正常：容器從休眠喚醒並從 R2 還原資料庫 |
 | `wrangler tail` 看到 `QCM_STORAGE=s3 時必須設定環境變數 QCM_S3_…` | 步驟 5 的 secret 沒設好，重新 `npx wrangler secret put …` 後再 `npm run deploy` |
+| 記錄出現 `Credential access key has length 48, should be 32`，或 `[entrypoint] R2 Access Key ID 應為 32 個字元` | `QCM_S3_ACCESS_KEY_ID` 填成了 Token value。改填 S3 的 **Access Key ID**（32 字元）與 **Secret Access Key**（64 字元），重設 secret 後 `npm run deploy` |
+| 記錄出現 `There is no container instance…`、`Container exited with unexpected exit code: 1` | 容器啟動失敗後的連鎖錯誤，往上找第一個 `[entrypoint]` 或 `Error:` 訊息才是真正原因 |
 | 照片顯示「照片遺失」 | R2 金鑰權限不足（需 Object Read & Write，且包含 `qcm-v3` bucket）或 endpoint 的 Account ID 打錯 |
 | 匯入時逾時或容器重啟 | Excel 太大、記憶體不足：把 `instance_type` 改成 `"standard-2"` 再部署 |
 
