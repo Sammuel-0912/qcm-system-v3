@@ -23,22 +23,24 @@ VM 需求：Linux x86_64、Docker Engine 24 以上（含 `docker compose` 外掛
 開發機須能連網，且已啟動 Docker（Windows 用 Docker Desktop，在 Git Bash 執行以下指令）。
 
 ```bash
-cd QualityControlModeling
-git pull                                   # 確認是要部署的版本
+cd qcm-system-v3
+git pull                                   # 確認是要部署的版本（分支：git branch --show-current）
 
-docker compose build                       # 產生 qcm-api:latest、qcm-web:latest
+# 開發機沒有 .env 時，compose 會因 POSTGRES_PASSWORD 必填而拒絕建置；給一個只用來建置的值即可
+#（不會寫進映像，VM 上的密碼在 A-3 的 .env 另外設定）
+POSTGRES_PASSWORD=build-only docker compose build   # 產生 qcm-api:latest、qcm-web:latest
 docker pull postgres:16-alpine
 
 docker save qcm-api:latest qcm-web:latest postgres:16-alpine | gzip > qcm-images.tar.gz
 ```
 
 > 開發機若是 Apple Silicon（ARM）等非 x86 機器，建置時要指定平台：
-> `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose build`，再 `docker pull --platform linux/amd64 postgres:16-alpine`。
+> `DOCKER_DEFAULT_PLATFORM=linux/amd64 POSTGRES_PASSWORD=build-only docker compose build`，再 `docker pull --platform linux/amd64 postgres:16-alpine`。
 
 要搬到 VM 的三個檔案：
 
 ```
-qcm-images.tar.gz      映像（約 200 MB）
+qcm-images.tar.gz      映像（約 300 MB）
 docker-compose.yml
 .env.example
 ```
