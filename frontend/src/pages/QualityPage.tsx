@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { formatLocalDateTime } from '../utils/datetime'
 import { AppShell } from '../components/AppShell'
 
 import {
@@ -21,10 +22,10 @@ import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
 import { KpovList } from '../components/KpovList'
 import { LevelCountBar } from '../components/LevelCountBar'
-import { LayoutMap } from '../components/LayoutMap'
 import { StationLevelChart } from '../components/StationLevelChart'
 import { StationRiskMap } from '../components/StationRiskMap'
 import { LevelTimeline } from '../components/LevelTimeline'
+import { RecordDetailDrawer, type RecordTarget } from '../components/RecordDetailDrawer'
 import { MultiSelect } from '../components/MultiSelect'
 import { QuadrantChart } from '../components/QuadrantChart'
 import { TrendChart } from '../components/TrendChart'
@@ -96,6 +97,8 @@ export default function QualityPage() {
   const [selectedLevel, setSelectedLevel] = useState<number | null>(null)
   const [kpovList, setKpovList] = useState<{ total: number; items: KpovItem[] } | null>(null)
   const [history, setHistory] = useState<HistoryResponse | null>(null)
+  // 措施表點列：8D 明細／等級歷程側欄
+  const [detail, setDetail] = useState<RecordTarget | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -219,12 +222,6 @@ export default function QualityPage() {
       .catch(() => setKpovList(null))
   }, [selectedLevel, state.deviatedOnly, state.target, station, line, attribute])
 
-  const worstLevels = useMemo(() => {
-    const map: Record<string, number | null> = {}
-    for (const s of filters?.stations ?? []) map[s.targetId] = s.worstLevel
-    return map
-  }, [filters])
-
   const selectedHotspot = HOTSPOTS.find((h) => h.targetId === state.target)
   const scopeLabel = selectedHotspot
     ? selectedHotspot.displayName
@@ -270,7 +267,7 @@ export default function QualityPage() {
   )
 
   return (
-    <AppShell title="WJ1 DCS 品控力風險智控平台" actions={headerActions}>
+    <AppShell title="總覽" actions={headerActions}>
 
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
         {/* ── 頂部：篩選器（只影響象限圖與異動總覽） ── */}
@@ -401,20 +398,18 @@ export default function QualityPage() {
                   setChangePage(1)
                 }}
                 onPageChange={setChangePage}
-                onSelect={openHistory}
+                onOpen={(row) =>
+                  setDetail({ repairId: row.repairId, complaintId: row.complaintId, kpovNo: row.kpovNo, equipmentCode: row.equipmentCode })
+                }
               />
             </div>
           </section>
         )}
 
-        {/* ── 中層：整線 layout（點站點連動下方） ── */}
+        {/* ── 中層：站別 Level 分佈＋站別風險地圖（點卡片連動下方）。
+             PM1 整線 Layout 圖先拿掉（使用者 2026-10-20），元件 LayoutMap 保留，之後可放回 ── */}
         <section className="rounded-lg border border-slate-200 bg-white p-4">
-          <LayoutMap
-            selected={state.target}
-            onSelect={(target) => setState((s) => ({ ...s, target }))}
-            worstLevels={worstLevels}
-          />
-          <div className="mt-5 border-t border-slate-100 pt-4">
+          <div>
             <StationLevelChart
               title="站別 Level 分佈"
               caption="各站 KPOV 個數・KPOV 數據庫原始 Level"
@@ -446,7 +441,7 @@ export default function QualityPage() {
         {filters?.batch && (
           <>
             資料批次：{filters.batch.filename} · 匯入於{' '}
-            {filters.batch.importedAt?.slice(0, 19).replace('T', ' ')}
+            {filters.batch.importedAt ? formatLocalDateTime(filters.batch.importedAt) : ''}
           </>
         )}
       </footer>
@@ -494,6 +489,8 @@ export default function QualityPage() {
           <LevelTimeline data={history} />
         </aside>
       )}
+
+      {detail && <RecordDetailDrawer target={detail} onClose={() => setDetail(null)} />}
 
       {showImport && (
         <ImportDialog onClose={() => setShowImport(false)} onImported={() => setReloadKey((k) => k + 1)} />

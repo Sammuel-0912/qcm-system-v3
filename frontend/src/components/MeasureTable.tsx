@@ -1,14 +1,14 @@
-import { Fragment, useState } from 'react'
+import { useState } from 'react'
 
-import type { EmergencyMeasure, MeasureRow, Paged } from '../api/client'
-import { EmergencyMeasureEditor, measureSummary } from './EmergencyMeasureEditor'
+import type { MeasureRow, Paged, TimedText } from '../api/client'
+import { formatLocalDateTime } from '../utils/datetime'
 import { LevelChange, LevelChip } from './LevelChip'
 
 type Props<T extends MeasureRow> = {
   data: Paged<T> | null
   onPageChange: (page: number) => void
-  /** 點列開 KPOV 側欄（僅對應到 KPOV 的列） */
-  onSelect?: (kpovNo: string, equipmentCode: string) => void
+  /** 點列開明細側欄（8D 明細／等級歷程）；只有帶 repairId 或 complaintId 的列可點 */
+  onOpen?: (row: T) => void
   emptyText: string
   /** 有給標題時顯示標題列；搭配 storageKey 可收折（預設收起、記住展開狀態） */
   title?: string
@@ -47,6 +47,18 @@ function writeOpen(key: string, open: boolean) {
   }
 }
 
+/** 措施文字＋下方日期（緊急措施為紅字緊急措施時間；長期措施為改善時間） */
+function Timed({ value, tone }: { value: TimedText; tone: string }) {
+  return (
+    <>
+      <span className="line-clamp-3 whitespace-pre-line" title={value.text ?? undefined}>
+        {value.text || '—'}
+      </span>
+      {value.at && <span className={`mt-0.5 block tabular-nums ${tone}`}>{day(value.at)}</span>}
+    </>
+  )
+}
+
 /** Level(原)：客訴只有改善前單一等級（before 為 null），只畫一個色塊 */
 function OrigLevel({ shift }: { shift: MeasureRow['levelOrig'] }) {
   if (!shift) return <span className="text-slate-400">—</span>
@@ -61,16 +73,13 @@ function OrigLevel({ shift }: { shift: MeasureRow['levelOrig'] }) {
 export function MeasureTable<T extends MeasureRow>({
   data,
   onPageChange,
-  onSelect,
+  onOpen,
   emptyText,
   title,
   storageKey,
 }: Props<T>) {
   const collapsible = Boolean(title && storageKey)
   const [open, setOpen] = useState(() => (storageKey ? readOpen(storageKey) : true))
-  // 展開中的措施層別編輯列，以及剛儲存、尚未重新載入的分類
-  const [editing, setEditing] = useState<string | null>(null)
-  const [saved, setSaved] = useState<Record<string, EmergencyMeasure>>({})
 
   const toggle = () =>
     setOpen((v) => {
@@ -97,19 +106,15 @@ export function MeasureTable<T extends MeasureRow>({
         </thead>
         <tbody>
           {data.items.map((row, idx) => {
-            const key = `${row.repairSerial}|${row.kpovNo}|${row.equipmentCode}`
-            const rowKey = `${key}|${idx}`
-            const measure = saved[key] ?? row.layer.measure
-            const editable = row.layer.editable && Boolean(row.repairSerial && row.kpovNo && row.equipmentCode)
-            const expanded = editable && editing === rowKey
-            const clickable = Boolean(onSelect && row.mapped && row.kpovNo && row.equipmentCode)
-            const layerText = row.layer.summary ?? (measure || editable ? measureSummary(measure) : null)
+            const rowKey = `${row.repairId ?? ''}|${row.complaintId ?? ''}|${row.kpovNo}|${idx}`
+            const clickable = Boolean(onOpen && (row.repairId || row.complaintId))
+            const layerText = row.layer.summary
             return (
-              <Fragment key={rowKey}>
                 <tr
-                  onClick={clickable ? () => onSelect!(row.kpovNo!, row.equipmentCode!) : undefined}
+                  key={rowKey}
+                  onClick={clickable ? () => onOpen!(row) : undefined}
                   className={`border-b border-slate-100 align-top ${clickable ? 'cursor-pointer hover:bg-slate-50' : ''}`}
-                  title={clickable ? '點擊查看此 KPOV 的等級歷程' : undefined}
+                  title={clickable ? '點擊查看 8D 明細與等級歷程' : undefined}
                 >
                   <td className="px-2 py-2 text-slate-800">{row.station ?? '—'}</td>
                   <td className="px-2 py-2">
@@ -125,38 +130,17 @@ export function MeasureTable<T extends MeasureRow>({
                   <td className="whitespace-nowrap px-2 py-2">
                     <OrigLevel shift={row.levelOrig} />
                     {row.occurredAt && (
-                      <span className="mt-0.5 block text-xs tabular-nums text-slate-400">{day(row.occurredAt)}</span>
+                      <span className="mt-0.5 block text-xs tabular-nums text-slate-400">{formatLocalDateTime(row.occurredAt).slice(0, 10)}</span>
                     )}
                   </td>
                   <td className="max-w-[14rem] px-2 py-2 text-xs text-slate-700">
-                    <span className="line-clamp-3" title={row.emergency.text ?? undefined}>
-                      {row.emergency.text || '—'}
-                    </span>
-                    {row.emergency.at && (
-                      <span className="mt-0.5 block tabular-nums text-red-600">{day(row.emergency.at)}</span>
-                    )}
+                    <Timed value={row.emergency} tone="text-red-600" />
                   </td>
-                  <td className="max-w-[10rem] px-2 py-2 text-xs text-slate-700">{row.longTerm ?? ''}</td>
+                  <td className="max-w-[14rem] px-2 py-2 text-xs text-slate-700">
+                    <Timed value={row.longTerm} tone="text-slate-500" />
+                  </td>
                   <td className="px-2 py-2 text-xs">
-                    {editable ? (
-                      <button
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setEditing(expanded ? null : rowKey)
-                        }}
-                        title="點擊設定措施層別"
-                        className={`block w-fit rounded px-1.5 py-0.5 text-left text-[11px] ring-1 ring-inset hover:ring-slate-500 ${
-                          measure ? 'bg-sky-50 text-sky-800 ring-sky-200' : 'bg-white text-slate-500 ring-slate-300'
-                        }`}
-                      >
-                        {expanded ? '▾ ' : '▸ '}
-                        {layerText}
-                      </button>
-                    ) : (
-                      <span className={layerText ? 'text-slate-700' : 'text-slate-400'}>{layerText ?? '—'}</span>
-                    )}
+                    <span className={layerText ? 'text-slate-700' : 'text-slate-400'}>{layerText ?? '—'}</span>
                   </td>
                   <td className="whitespace-nowrap px-2 py-2">
                     {row.levelChanged ? (
@@ -186,22 +170,6 @@ export function MeasureTable<T extends MeasureRow>({
                   </td>
                   <td className="px-2 py-2 text-center tabular-nums text-slate-700">{row.complaintCount}</td>
                 </tr>
-                {expanded && (
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <td colSpan={HEADERS.length} className="px-3 py-3">
-                      <EmergencyMeasureEditor
-                        target={{
-                          repairSerial: row.repairSerial!,
-                          kpovNo: row.kpovNo!,
-                          equipmentCode: row.equipmentCode!,
-                        }}
-                        measure={measure}
-                        onSaved={(m) => setSaved((prev) => ({ ...prev, [key]: m }))}
-                      />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
             )
           })}
         </tbody>

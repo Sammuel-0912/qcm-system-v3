@@ -36,6 +36,7 @@ from ..models import (
     FactRepair,
     ImportBatch,
 )
+from ..config import CHECK_SHIFTS
 from ..services.level import compute_level
 from . import mapping as M
 from .level_events import derive_level_events
@@ -160,7 +161,8 @@ def _match_header(header_name: str, column_map: dict[str, str]) -> str | None:
     return best
 
 
-_HEADER_SCAN_ROWS = 5
+# 1019 版的修護報表表頭在第 5 列（上方有 8D 區塊的多層分組標題），保留一些餘裕
+_HEADER_SCAN_ROWS = 8
 
 
 def _map_header(
@@ -221,13 +223,15 @@ def _read_table(
     for header_row in range(min(_HEADER_SCAN_ROWS, len(rows))):
         header = [M.normalize(cell) for cell in rows[header_row]]
         field_index, matched_specs = _map_header(header, column_map, duplicates, paired)
-        missing = [col for col in required if col not in matched_specs]
+        # 「A|B」：兩個表頭擇一即可（新舊版欄名不同）
+        missing = [col for col in required if not any(alt in matched_specs for alt in col.split("|"))]
         if not missing:
             return field_index, rows[header_row + 1 :], header
         if best_missing is None or len(missing) < len(best_missing):
             best_missing = missing
 
-    raise ImportError_(f"工作表「{sheet.title}」缺少必要欄位：{'、'.join(best_missing or required)}")
+    missing_text = "、".join(col.replace("|", "／") for col in (best_missing or required))
+    raise ImportError_(f"工作表「{sheet.title}」缺少必要欄位：{missing_text}")
 
 
 def _row_to_dict(row: tuple, field_index: dict[str, int]) -> dict:
@@ -281,7 +285,14 @@ def _carry_over_where(session: Session, model, from_batch: int, to_batch: int, c
 # 兩版欄位的聯集；底線開頭者（新版的分數欄）只供比對，不入庫
 REPAIR_FIELDS = tuple(
     f
-    for f in dict.fromkeys([*M.REPAIR_COLUMNS.values(), *M.REPAIR_COLUMNS_V2.values()])
+    for f in dict.fromkeys(
+        [
+            *M.REPAIR_COLUMNS.values(),
+            *M.REPAIR_COLUMNS_V2.values(),
+            # 1019 版起的 8D 區塊（含由預計／實際完成時間推出的日期）
+            *(M.REPAIR_EIGHT_D_PREFIX + f for f in (*M.EIGHT_D_COLUMNS.values(), "planned_at", "done_at")),
+        ]
+    )
     if not f.startswith("_")
 )
 
@@ -310,6 +321,10 @@ def _repair_key(values: dict) -> tuple:
 # --------------------------------------------------------------------------- 偵測方式字典
 
 
+def _dictionary_rank(pairs: list[tuple[str, int]]) -> tuple[int, int]:
+    return (len({score for _, score in pairs}), len(pairs))
+
+
 def parse_detection_dictionary(sheet) -> list[tuple[str, int]]:
     """從「修護報表」工作表解析偵測方式字典（spec.md §2.5 / REQ-IMP-05）。
 
@@ -334,7 +349,10 @@ def parse_detection_dictionary(sheet) -> list[tuple[str, int]]:
             score = _to_int(row[col + 1]) if col + 1 < len(row) else None
             if name and score is not None and 1 <= score <= 10:
                 pairs.append((name, score))
-        if len(pairs) > len(best):
+        # 1019 版的修護報表多了 8D 區塊，裡面也有「偵測方式＋偵測度」的相鄰欄位（例：「直流轉換器
+        # 電流不平衡關機｜5」），筆數還比字典多。真正的字典是 1–10 分各一種方式，分數幾乎不重複；
+        # 8D 區塊則是同一分數重複出現。因此先比「不同分數的個數」，再比筆數。
+        if _dictionary_rank(pairs) > _dictionary_rank(best):
             best = pairs
 
     # 去重，保留首次出現
@@ -447,11 +465,17 @@ _INTERVAL = re.compile(r"(\d+(?:\.\d+)?)\s*(h|hr|小時)", re.IGNORECASE)
 
 
 def parse_interval_hours(frequency: str | None) -> float:
-    """點檢頻率字串 -> 間隔小時，例：「開線/班、巡檢: 2h/次」-> 2。解析不到預設 2 小時。"""
+    """點檢頻率字串 -> 間隔小時。
+
+    「開線/班、巡檢: 2h/次」-> 2；只有「開線/班」（每班一次）-> 一整班的時數，首頁只畫 1 格。
+    解析不到預設 2 小時。
+    """
     if frequency:
         match = _INTERVAL.search(frequency)
         if match:
             return float(match.group(1))
+        if "班" in frequency:
+            return float(max(length for _, _, length in CHECK_SHIFTS))
     return 2.0
 
 
@@ -708,6 +732,9 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     legacy = M.REPAIR_V1_MARKER in header_text
     repair_map = M.REPAIR_COLUMNS if legacy else M.REPAIR_COLUMNS_V2
     idx, rows, _ = _read_table(repair_sheet, repair_map, M.REPAIR_REQUIRED, "repair")
+    eight_d = _repair_eight_d_index(repair_sheet, report)
+    if "emergency_measure" not in idx:
+        report.warnings.append("修護報表沒有「緊急措施」欄，措施表的緊急措施會是空白（1019 版以前的檔案）")
     has_improve_time = "improvement_effective_at" in idx
     if not has_improve_time:
         report.warnings.append("修護報表沒有「改善時間」欄，改善事件暫以匯入時間代替（舊版檔案）")
@@ -716,6 +743,9 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
         data = _row_to_dict(row, idx)
         if not data.get("equipment_code") and not data.get("kpov_no"):
             continue  # 字典區的列，不是維修紀錄
+        if eight_d:
+            for field, value in _eight_d_values(row, eight_d).items():
+                data[M.REPAIR_EIGHT_D_PREFIX + field] = value
         if not data.get("equipment_code") and data.get("station"):
             # 沒有設備ID 的是 OP 站，依站別查「設備對應參考」
             data["equipment_code"] = lookup.resolve(data["station"], op=True)
@@ -959,47 +989,108 @@ def _import_complaints(session, workbook, batch, report, previous, carry) -> Non
         return
 
     rows = list(sheet.iter_rows(values_only=True))
-    index = {letter: column_index_from_string(letter) - 1 for letter in M.COMPLAINT_COLUMNS}
+    index = {field: column_index_from_string(letter) - 1 for letter, field in M.COMPLAINT_COLUMNS.items()}
 
     # 驗證表頭：每個關鍵欄位的文字必須出現在前幾列的該欄
     head = rows[: M.COMPLAINT_HEADER_ROWS]
-    wrong = []
-    for letter, label in M.COMPLAINT_HEADER_CHECKS.items():
-        col = column_index_from_string(letter) - 1
-        texts = [M.normalize(r[col]) if col < len(r) else "" for r in head]
-        if not any(label in t.replace(" ", "") for t in texts):
-            wrong.append(f"{letter} 欄應為「{label}」")
+    wrong = _header_mismatches(head, M.COMPLAINT_HEADER_CHECKS)
     if wrong:
         raise ImportError_(f"「{sheet.title}」欄位位置與預期不符：{'；'.join(wrong)}")
-
-    def text(row, field_letter):
-        idx = index[field_letter]
-        value = _to_text(row[idx]) if idx < len(row) else None
-        return None if value in ("#N/A", "N/A", "NA", "-") else value
+    # 緊急措施等欄位位置可能再變動，以表頭文字定位（找不到就不讀）
+    named = _named_columns(head, M.COMPLAINT_NAMED_COLUMNS)
 
     count = 0
     for row in rows[M.COMPLAINT_HEADER_ROWS - 2 :]:
         seq = _to_int(row[0]) if row else None
         if seq is None:
             continue  # 表頭、範本空列、右側偵測字典列
-        data: dict[str, Any] = {}
-        for letter, field in M.COMPLAINT_COLUMNS.items():
-            data[field] = text(row, letter)
+        data: dict[str, Any] = {
+            field: _clean_text(row[i]) if i < len(row) else None for field, i in index.items()
+        }
+        data.update(_eight_d_values(row, index))
         data["seq"] = seq
-        data["complained_at"] = _to_datetime(row[index["E"]]) or _complaint_dates(row[index["E"]])[0]
-        for field in ("big_y_score_before", "small_y_score_before", "small_y_score_after", "big_y_score_after"):
-            data[field] = _to_int(data[field])
-        for field in ("level_before", "level_after"):
-            match = _LEVEL_IN_TEXT.search(data[field] or "")
-            data[field] = int(match.group(1)) if match else None
-        data["planned_at"], _ = _complaint_dates(row[index["AH"]])
-        done_at, all_done = _complaint_dates(row[index["AI"]])
-        data["done_at"] = done_at if all_done else None
-        if isinstance(row[index["AH"]], (dt.datetime, dt.date)):
-            data["planned_text"] = _to_datetime(row[index["AH"]]).date().isoformat()
-        if isinstance(row[index["AI"]], (dt.datetime, dt.date)):
-            data["done_text"] = _to_datetime(row[index["AI"]]).date().isoformat()
+        data["complained_at"] = _to_datetime(row[index["complained_at"]]) or _complaint_dates(
+            row[index["complained_at"]]
+        )[0]
+        for field, i in named.items():
+            raw = row[i] if i < len(row) else None
+            data[field] = _to_datetime(raw) if field.endswith("_at") else _clean_text(raw)
         session.add(FactComplaint(batch_id=batch.id, **data))
         count += 1
     report.row_counts["complaints"] = count
+
+
+def _clean_text(value: Any) -> str | None:
+    text = _to_text(value)
+    return None if text in ("#N/A", "N/A", "NA", "-") else text
+
+
+def _header_mismatches(head: list[tuple], checks: dict[str, str], offset: int = 0) -> list[str]:
+    """表頭文字檢查：checks 的每個欄位（可整段位移 offset 欄）都要在前幾列出現指定文字。"""
+    from openpyxl.utils import column_index_from_string
+
+    wrong = []
+    for letter, label in checks.items():
+        col = column_index_from_string(letter) - 1 + offset
+        texts = [M.normalize(r[col]) if col < len(r) else "" for r in head]
+        if not any(label in t.replace(" ", "") for t in texts):
+            wrong.append(f"{M.shift_letter(letter, offset)} 欄應為「{label}」")
+    return wrong
+
+
+def _named_columns(head: list[tuple], names: dict[str, str]) -> dict[str, int]:
+    """在表頭列中以完全相同的文字找欄位，回傳 {欄位: 索引}；同名取第一個。"""
+    found: dict[str, int] = {}
+    for row in head:
+        for i, cell in enumerate(row):
+            field = names.get(M.normalize(cell))
+            if field and field not in found:
+                found[field] = i
+    return found
+
+
+def _eight_d_values(row: tuple, index: dict[str, int]) -> dict[str, Any]:
+    """讀 8D 區塊（客訴報表與修護報表共用）：index 為 {8D 欄位: 欄索引}。
+
+    分數轉整數、「Level 3」轉 3、預計／實際完成時間另存日期（多項對策取最晚日期；
+    實際完成時間要每一項都有日期才算完成）。
+    """
+    def raw(field: str):
+        i = index.get(field)
+        return row[i] if i is not None and i < len(row) else None
+
+    data: dict[str, Any] = {field: _clean_text(raw(field)) for field in M.EIGHT_D_COLUMNS.values()}
+    for field in M.EIGHT_D_INT_FIELDS:
+        data[field] = _to_int(data[field])
+    for field in M.EIGHT_D_LEVEL_FIELDS:
+        match = _LEVEL_IN_TEXT.search(data[field] or "")
+        data[field] = int(match.group(1)) if match else None
+    data["planned_at"], _ = _complaint_dates(raw("planned_text"))
+    done_at, all_done = _complaint_dates(raw("done_text"))
+    data["done_at"] = done_at if all_done else None
+    for field in ("planned_text", "done_text"):
+        if isinstance(raw(field), (dt.datetime, dt.date)):
+            data[field] = _to_datetime(raw(field)).date().isoformat()
+    return data
+
+
+def _repair_eight_d_index(sheet, report: "ImportReport") -> dict[str, int]:
+    """修護報表的 8D 區塊（1019 版起）：位置與客訴報表相同但右移 11 欄。
+
+    表頭文字全部對得上才讀；完全沒有這段（舊版）就略過；只對上一部分代表欄位位置變了，
+    寧可不讀並提出警告，也不要讀錯欄。
+    """
+    from openpyxl.utils import column_index_from_string
+
+    head = list(sheet.iter_rows(max_row=M.COMPLAINT_HEADER_ROWS, values_only=True))
+    wrong = _header_mismatches(head, M.EIGHT_D_HEADER_CHECKS, M.REPAIR_EIGHT_D_OFFSET)
+    if len(wrong) == len(M.EIGHT_D_HEADER_CHECKS):
+        return {}
+    if wrong:
+        report.warnings.append(f"修護報表的 8D 區塊欄位位置與預期不符，未匯入 8D 內容：{'；'.join(wrong)}")
+        return {}
+    return {
+        field: column_index_from_string(letter) - 1 + M.REPAIR_EIGHT_D_OFFSET
+        for letter, field in M.EIGHT_D_COLUMNS.items()
+    }
 

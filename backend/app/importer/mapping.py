@@ -155,6 +155,9 @@ _REPAIR_COMMON: dict[str, str] = {
     # D-03：IMPROVE 生效時間。1011 版起修護報表提供「改善時間」
     "改善時間": "improvement_effective_at",
     "改善生效日": "improvement_effective_at",
+    # 1019 版起：緊急措施（措施表「緊急措施」欄，紅字時間為緊急措施時間）
+    "緊急措施": "emergency_measure",
+    "緊急措施時間": "emergency_measure_at",
 }
 
 # 舊版：「(變化後)」= 不良發生時（DEGRADE）、「(提升後)」= 改善後（IMPROVE）
@@ -230,16 +233,11 @@ CHANGE_REQUIRED = ("切入時間", "內容")
 # 客訴報表：三層合併表頭，同名欄位（偵測方式、偵測度、簡述作業方式…）重複多次，
 # 無法以名稱對應，改以欄位位置對應；匯入時再以 COMPLAINT_HEADER_CHECKS 驗證表頭文字，
 # 來源檔欄位若有增減會直接報錯，而不是默默讀錯欄。
-COMPLAINT_COLUMNS: dict[str, str] = {
-    "A": "seq",
-    "B": "report_no",
-    "C": "site",
-    "D": "plant",
-    "E": "complained_at",
-    "F": "customer",
-    "G": "category",
-    "H": "item",
+# 8D 區塊（現狀盤查 → 原因 → 改善對策 → 改善後盤查）。客訴報表在 I–AX，1019 版的修護報表
+# 也加入同一段，位置整段右移 11 欄（T–BI）。欄位字母以客訴報表為準，修護報表用 shift_letter 換算。
+EIGHT_D_COLUMNS: dict[str, str] = {
     "I": "process_unit",
+    # 現狀：Y（CC/SC）與 y（KPOV）的攔截能力
     "J": "big_y_item_before",
     "K": "big_y_method_before",
     "L": "big_y_score_before",
@@ -247,9 +245,17 @@ COMPLAINT_COLUMNS: dict[str, str] = {
     "N": "small_y_method_before",
     "O": "small_y_score_before",
     "P": "level_before",
+    # 現狀：關鍵 KPIV(x) 管控力
+    "Q": "kpiv_factor_before",
+    "R": "kpiv_foolproof_before",
+    "S": "kpiv_foolproof_desc_before",
+    "T": "kpiv_monitor_before",
+    "U": "kpiv_monitor_desc_before",
+    "V": "kpiv_level_before",
     "W": "cause_occur",
     "X": "cause_escape",
     # 改善對策：管理解（流程卡控）與技術解（CC/SC 設備攔截；KPOV 設計消除／設備攔截；KPIV 防呆防錯／智能監控）
+    "Y": "mgmt_verdict",
     "Z": "mgmt_measure",
     "AA": "tech_ccsc_interception",
     "AB": "tech_kpov_design_elimination",
@@ -261,12 +267,59 @@ COMPLAINT_COLUMNS: dict[str, str] = {
     "AH": "planned_text",
     "AI": "done_text",
     "AJ": "effectiveness",
+    # 改善後
+    "AK": "product_kpov_after",
     "AL": "small_y_method_after",
     "AM": "small_y_score_after",
+    "AN": "big_y_item_after",
     "AO": "big_y_method_after",
     "AP": "big_y_score_after",
     "AQ": "level_after",
+    "AR": "kpiv_factor_after",
+    "AS": "kpiv_foolproof_after",
+    "AT": "kpiv_foolproof_desc_after",
+    "AU": "kpiv_monitor_after",
+    "AV": "kpiv_monitor_desc_after",
+    "AW": "kpiv_level_after",
     "AX": "verdict",
+}
+EIGHT_D_INT_FIELDS = ("big_y_score_before", "small_y_score_before", "small_y_score_after", "big_y_score_after")
+EIGHT_D_LEVEL_FIELDS = ("level_before", "level_after")
+# 驗證 8D 區塊位置的表頭文字（客訴報表欄位）
+EIGHT_D_HEADER_CHECKS: dict[str, str] = {
+    "I": "製程單元",
+    "M": "產品KPOV",
+    "P": "品質管控力",
+    "Z": "管理對策",
+    "AF": "改善對策總結",
+    "AG": "責任人",
+    "AH": "預計完成時間",
+    "AI": "實際完成時間",
+    "AQ": "品質管控力",
+    "AX": "改善判定",
+}
+# 修護報表的 8D 區塊比客訴報表右移 11 欄；8D 欄位在 fact_repair 一律加 d8_ 前綴，
+# 避免與維修本身的欄位（處理對策 countermeasure、變化後偵測方式 small_y_method_after…）撞名
+REPAIR_EIGHT_D_OFFSET = 11
+REPAIR_EIGHT_D_PREFIX = "d8_"
+
+
+def shift_letter(letter: str, offset: int) -> str:
+    from openpyxl.utils import column_index_from_string, get_column_letter
+
+    return get_column_letter(column_index_from_string(letter) + offset)
+
+
+COMPLAINT_COLUMNS: dict[str, str] = {
+    "A": "seq",
+    "B": "report_no",
+    "C": "site",
+    "D": "plant",
+    "E": "complained_at",
+    "F": "customer",
+    "G": "category",
+    "H": "item",
+    **EIGHT_D_COLUMNS,
     "AY": "equipment_code",
     "AZ": "kpov_no",
 }
@@ -275,15 +328,16 @@ COMPLAINT_HEADER_CHECKS: dict[str, str] = {
     "B": "8D編號",
     "E": "日期",
     "H": "客訴項目",
-    "M": "產品KPOV",
-    "P": "品質管控力",
-    "AF": "改善對策總結",
-    "AG": "責任人",
-    "AH": "預計完成時間",
-    "AI": "實際完成時間",
-    "AQ": "品質管控力",
+    **EIGHT_D_HEADER_CHECKS,
     "AY": "設備ID",
     "AZ": "KPOV編號",
+}
+# 1019 版起：客訴報表在 KPOV 編號右側插入緊急措施；位置可能再變動，改以表頭文字找欄位
+COMPLAINT_NAMED_COLUMNS: dict[str, str] = {
+    "緊急措施": "emergency_measure",
+    "緊急措施時間": "emergency_measure_at",
+    "改善時間": "improvement_effective_at",
+    "改善措施": "improvement",
 }
 COMPLAINT_HEADER_ROWS = 6  # 表頭最多在前 6 列內
 
@@ -297,9 +351,13 @@ CHECK_ITEM_COLUMNS: dict[str, str] = {
     "大Y偵測度": "big_y_score",
     "品控力等級": "level_source",
     "點檢內容": "check_content",
+    # 1019 版起：點檢內容改稱「KPIV(x) 點檢內容」，並新增 KPIV 管控等級（A/B/E…）
+    "KPIV(x) 點檢內容": "check_content",
+    "KPIV(x) 管控等級": "kpiv_control_level",
     "點檢頻率": "frequency",
 }
-CHECK_ITEM_REQUIRED = ("KPOV 编号", "點檢內容")
+# 「A|B」表示兩個表頭擇一即可
+CHECK_ITEM_REQUIRED = ("KPOV 编号", "KPIV(x) 點檢內容|點檢內容")
 
 # 數值欄位（需轉 int / float）
 INT_FIELDS = {"small_y_score", "big_y_score"}
@@ -312,4 +370,5 @@ DATETIME_FIELDS = {
     "tested_at",
     "repaired_at",
     "improvement_effective_at",
+    "emergency_measure_at",
 }

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 
 import { api, type CheckMonitorRow, type CheckShift, type SlotState } from '../api/client'
 import { AppShell } from '../components/AppShell'
+import { KpivLevelBadge } from '../components/KpivLevelBadge'
 import { PhotoCheckButton } from '../components/PhotoCheckButton'
 
 const SLOT_CLASS: Record<SlotState, string> = {
@@ -70,7 +71,7 @@ export default function PhotoInspectPage() {
           {shift && (
             <p className="mt-1.5 text-xs text-slate-500">
               {shift.label}
-              {shift.ended && '（已結束）'}・每 2 小時拍照點檢一次，上傳成功即算完成
+              {shift.ended && '（已結束）'}・依各項點檢頻率拍照（開線/班：每班一次；巡檢：依標示間隔），上傳成功即算完成
             </p>
           )}
         </div>
@@ -87,6 +88,7 @@ export default function PhotoInspectPage() {
           {items.map((item) => (
             <li key={item.id} className="rounded-lg border border-slate-200 bg-white p-4">
               <p className="text-base text-slate-900">{item.checkContent}</p>
+              {item.kpivControlLevel && <KpivLevelBadge value={item.kpivControlLevel} />}
               <p className="mt-0.5 text-xs text-slate-500">
                 {item.kpovName} <span className="font-mono">{item.kpovNo}</span> ・{' '}
                 {item.frequency ?? `${item.intervalHours}h/次`}

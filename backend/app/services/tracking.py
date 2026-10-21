@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..models import FactComplaint, FactRepair
 from .lifecycle import KpovState
-from .measure_rows import complaint_row, events_by_repair, measures_for, repair_row, utc
+from .measure_rows import complaint_row, events_by_repair, repair_row, utc
 from .query import in_bounds
 
 
@@ -96,7 +96,6 @@ def process_summary(
 
     counts = {"current": _empty_level_counts(), "total": len(repairs)}
     events = events_by_repair(session, batch_id)
-    measures = measures_for(session, repairs)
     now = dt.datetime.now(dt.timezone.utc)
     rows = []
     for r in repairs:
@@ -108,8 +107,6 @@ def process_summary(
                 r,
                 state,
                 events.get(r.id, {}),
-                measures.get((r.serial_no, r.kpov_no, r.equipment_code)),
-                editable=False,
                 now=now,
             )
         )

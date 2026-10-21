@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from ...config import AR_UPLOAD_DIR, AR_UPLOAD_URL_PREFIX
+from ...services.storage import get_storage
+from ...services.storage import url_for as storage_url_for
 from ...db import get_session
 from ...models import ArDevice, ArInspection, DimEquipment, FactKpov
 from ...services.check_monitor import check_items, monitor_rows
@@ -150,12 +151,10 @@ def upload_device_image(
             detail=f"不支援的圖片格式 {ext or '(無副檔名)'}；可用：{', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}",
         )
 
-    filename = f"device_{marker_id}_{uuid.uuid4().hex[:8]}{ext}"
-    AR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    with (AR_UPLOAD_DIR / filename).open("wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+    key = f"device_{marker_id}_{uuid.uuid4().hex[:8]}{ext}"
+    get_storage().put(key, file.file.read(), file.content_type)
 
-    device.image_url = f"{AR_UPLOAD_URL_PREFIX}/{filename}"
+    device.image_url = storage_url_for(key)
     session.commit()
     return {"markerId": marker_id, "imageUrl": device.image_url}
 

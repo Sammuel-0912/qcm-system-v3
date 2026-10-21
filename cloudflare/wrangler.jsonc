@@ -1,0 +1,47 @@
+// CNE WJ1 DCS 品控力風險智控平台 — Cloudflare 部署設定（步驟見 ../DEPLOY.cloudflare.md）
+//
+//   瀏覽器 ──▶ Worker（src/index.ts）
+//                ├─ /api/*、/health ──▶ 後端容器 Backend（../backend/Dockerfile，只跑 1 個）
+//                │                        ├─ SQLite：Litestream 持續備份到 R2（db/）
+//                │                        └─ 照片：存 R2（checks/、device_*）
+//                └─ 其他路徑 ──▶ 前端靜態檔（../frontend/dist，SPA）
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "qcm-v3",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "assets": {
+    "directory": "../frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // 這些路徑先交給 Worker（轉給後端容器）；其餘直接回靜態檔
+    "run_worker_first": ["/api/*", "/health"]
+  },
+
+  "containers": [
+    {
+      "class_name": "Backend",
+      "image": "../backend/Dockerfile",
+      "image_build_context": "../backend",
+      // 只能 1 個：SQLite＋Litestream 單一寫入者，線上人數也存在程序記憶體
+      "max_instances": 1,
+      // 1/2 vCPU、4 GiB：匯入 Excel（上萬列告警）需要的記憶體；用量小可改 "basic"
+      "instance_type": "standard-1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "BACKEND", "class_name": "Backend" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Backend"] }],
+
+  // 非機密設定（機密的 R2 金鑰用 `npx wrangler secret put` 設定，見部署文件）
+  "vars": {
+    "QCM_S3_BUCKET": "qcm-v3",
+    // 改成你的帳號 ID：https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+    "QCM_S3_ENDPOINT": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+    "QCM_SITE_UTC_OFFSET": "8"
+  }
+}

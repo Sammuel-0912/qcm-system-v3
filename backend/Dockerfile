@@ -18,6 +18,9 @@ COPY app ./app
 RUN useradd --system --uid 10001 --home-dir /app app \
     && mkdir -p /app/data \
     && chown -R app:app /app/data
+# Litestream：Cloudflare 部署時把 SQLite 持續備份到 R2（QCM_LITESTREAM=1 才啟用，見 entrypoint）
+COPY --from=litestream/litestream:0.5.17 /usr/local/bin/litestream /usr/local/bin/litestream
+COPY litestream.yml /etc/litestream.yml
 COPY docker-entrypoint.sh /entrypoint.sh
 # Windows 簽出可能帶 CRLF，去掉以免 /bin/sh 無法執行
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh

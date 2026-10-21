@@ -22,6 +22,11 @@ from ..models import FactKpov, FactLevelEvent, FactRepair, ImportBatch
 from ..services.level import classify_transition, compute_level
 
 
+def _aware(value: dt.datetime) -> dt.datetime:
+    """比較用：不帶時區的時間視為 UTC（SQLite 讀回與 Excel 解析的時間都不帶時區）。"""
+    return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value
+
+
 def _resolve(method: str | None, method_scores: dict[str, int]) -> tuple[str, int] | None:
     if not method:
         return None
@@ -72,6 +77,11 @@ def derive_level_events(
             ("DEGRADE", repair.small_y_method_after, repair.big_y_method_after, repair.tested_at or batch_time),
         ]
         improve_at = repair.improvement_effective_at or (batch_time if improve_time_fallback else None)
+        degrade_at = repair.tested_at
+        if improve_at is not None and degrade_at is not None and _aware(improve_at) < _aware(degrade_at):
+            # 改善時間多半只填日期（00:00），當天稍晚才發現的不良會排到改善之後，
+            # 現況就停在惡化後的等級。同一筆維修的改善不可能早於它的不良，以不良時間為下限。
+            improve_at = degrade_at
         if improve_at is not None:
             plan.append(("IMPROVE", repair.small_y_method_improved, repair.big_y_method_improved, improve_at))
         elif repair.small_y_method_improved or repair.big_y_method_improved:
