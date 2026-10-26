@@ -487,6 +487,24 @@ export type PhotoInspection = {
 }
 
 /** 點檢儀表板良率卡片：依設備（站別）彙總 */
+/** 點檢看板趨勢與分布（spec §18） */
+export type CheckTrend = {
+  days: number
+  since: string
+  trackingFrom: string | null
+  series: { date: string; warn: number; inspected: number; missed: number; expected: number }[]
+  items: {
+    station: string | null
+    equipmentCode: string
+    kpovNo: string | null
+    checkContent: string | null
+    kpivControlLevel: string | null
+    total: number
+    warn: number
+  }[]
+  totals: { total: number; ok: number; warn: number; missed: number }
+}
+
 export type PhotoInspectionStat = {
   equipmentCode: string
   station: string
@@ -646,6 +664,7 @@ export const api = {
   photoInspections: (p: { equipmentCode?: string; start?: string; end?: string }) =>
     get<{ total: number; items: PhotoInspection[] }>('/check-inspections', p),
   photoInspectionStats: () => get<PhotoInspectionStat[]>('/check-inspections/stats'),
+  checkTrend: (days: number) => get<CheckTrend>('/check-inspections/trend', { days: String(days) }),
   /** 匯出含照片的 Excel；篩選條件同列表，baseUrl 用來組出可點的原圖連結 */
   photoInspectionExportUrl: (p: { equipmentCode?: string; start?: string; end?: string; baseUrl?: string }) => {
     const search = new URLSearchParams()

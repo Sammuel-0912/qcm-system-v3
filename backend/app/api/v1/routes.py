@@ -51,6 +51,7 @@ from ...services.check_monitor import (
     utc,
 )
 from ...services import presence
+from ...services.check_trend import check_trend
 from ...services.due import (
     DUE_FILTERS,
     due_matches,
@@ -1266,6 +1267,16 @@ def check_inspection_stats(scope: Scope = Depends(current_scope), session: Sessi
     for row in rows:
         row["okRate"] = round(row["okCount"] / row["total"], 4)
     return rows
+
+
+@router.get("/check-inspections/trend")
+def check_inspection_trend(
+    days: int = Query(14, ge=1, le=90),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
+    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days)
 
 
 # 點檢紀錄是稽核證據，不提供刪除 API（使用者 2026-10-20 決定）。
