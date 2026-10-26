@@ -24,7 +24,9 @@ VM 需求：Linux x86_64、Docker Engine 24 以上（含 `docker compose` 外掛
 
 ```bash
 cd qcm-system-v3
-git pull                                   # 確認是要部署的版本（分支：git branch --show-current）
+git checkout feat/rbac                     # 要部署的分支：登入／權限、廣播、篩選與逾期、點檢趨勢都在這裡（尚未合併到 main）
+git pull
+git log --oneline -1                       # 記下部署的版本，之後回報問題時用
 
 # 開發機沒有 .env 時，compose 會因 POSTGRES_PASSWORD 必填而拒絕建置；給一個只用來建置的值即可
 #（不會寫進映像，VM 上的密碼在 A-3 的 .env 另外設定）
@@ -76,12 +78,23 @@ docker compose up -d --no-build            # 只會重建映像有變的容器�
 docker image prune -f                      # 清掉舊版映像
 ```
 
+> **從沒有登入功能的舊版升級時**（VM 上已經跑過舊版）：
+> 1. `docker-compose.yml` 這次有改（api 多了登入用的環境變數），**一定要連同新的 `docker-compose.yml`、`.env.example` 一起傳上去**。
+> 2. 在 VM 既有的 `.env` 最後補上三行（值請自行修改，不要直接用範例）：
+>    ```
+>    QCM_JWT_SECRET=<openssl rand -hex 32 的結果>
+>    QCM_ADMIN_USERNAME=admin
+>    QCM_ADMIN_PASSWORD=<至少 8 碼>
+>    ```
+> 3. 啟動後資料庫會自動補欄位，舊資料一律歸到 `WJ1-DCS-PM1`；拍照點檢紀錄與照片都保留。
+> 4. 之後匯入 Excel 時，檔名必須改成 `WJ1-DCS-PM1-數據庫-月日.xlsx` 這種格式（見「首次使用」）。
+
 ---
 
 ## 方式 B：VM 直接建置（VM 能連外網時）
 
 ```bash
-git clone https://github.com/Sammuel-0912/qcm-system.git qcm
+git clone -b feat/rbac https://github.com/Sammuel-0912/qcm-system-v3.git qcm   # private repo，需要 GitHub 帳號或 token
 cd qcm
 cp .env.example .env && vi .env            # 必改 POSTGRES_PASSWORD、QCM_JWT_SECRET、QCM_ADMIN_PASSWORD
 docker compose up -d --build
@@ -99,12 +112,25 @@ docker compose up -d --build
    **檔名必須是 `廠-產品廠-線別-數據庫-月日.xlsx`**（廠為 WJ1～WJ8），系統依檔名決定資料屬於哪個廠、哪條線；
    同一條線只保留最新一次匯入，不同線互不影響。
 3. 側邊欄 **系統管理 › 使用者管理**：指派各廠的廠管理者；廠管理者再自行新增該廠的一般使用者。
+4. （選用）要補回舊系統的點檢次數時：**點檢看板 › 匯入歷史點檢數量**（只有最高權限管理者看得到），
+   上傳舊系統點檢看板「匯出紀錄（含照片）」的 Excel。只累加站別卡片的正常／異常次數，不會出現在點檢紀錄；重複匯入不會重算。
+   匯入的對象是畫面上方目前選的廠／線別。
 
 | 角色 | 看資料 | 拍照點檢 | 匯入 Excel | 使用者管理 |
 |---|---|---|---|---|
 | 最高權限管理者 | 所有廠 | ✓ | 任何廠 | 所有帳號，可指派廠管理者 |
 | 廠管理者 | 自己的廠 | ✓ | 只限自己廠的檔名 | 自己廠的一般使用者 |
 | 一般使用者 | 自己的廠 | ✓ | ✗ | ✗ |
+
+部署完成的快速檢查（在 VM 上）：
+
+```bash
+curl -s http://localhost:8080/health                       # {"status":"ok"}
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/v1/filters   # 401＝登入保護正常
+docker compose logs api | grep -E "已建立最高權限管理者|未設定 QCM_JWT_SECRET|尚無最高權限管理者"
+```
+
+最後一行若出現「未設定 QCM_JWT_SECRET」或「尚無最高權限管理者」，表示 `.env` 少了設定，或 `QCM_ADMIN_PASSWORD` 不到 8 碼；補好後執行 `docker compose up -d --no-build`。
 
 防火牆需開放 `WEB_PORT`（例：`sudo firewall-cmd --add-port=8080/tcp --permanent && sudo firewall-cmd --reload`，
 或 Ubuntu 的 `sudo ufw allow 8080/tcp`）。資料庫與 api 都不對外，不需要開。
@@ -165,3 +191,5 @@ gunzip -c qcm-db-2026-10-15.sql.gz | docker compose exec -T db psql -U qcm qcm
 - **`docker compose down -v` 會刪除所有資料**（含資料庫與照片），除非要整個重來，否則不要加 `-v`。
 - `api` 只能跑單一程序：線上人數存在程序記憶體裡，多開會各算各的。
 - 前端的 `/api/` 由 nginx 轉發，瀏覽器只需連 `WEB_PORT`，不會有跨網域問題。
+- 忘記最高權限管理者密碼時，改 `.env` 不會生效（帳號已存在）。請由另一位最高權限管理者在「使用者管理」重設；
+  若只有一位，需進資料庫刪除該帳號後重啟 api，系統會依 `.env` 重新建立。
