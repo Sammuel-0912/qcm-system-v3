@@ -28,8 +28,10 @@ def _clean():
 
 @pytest.fixture()
 def client():
-    # 不進 context manager：presence 不需要 startup 的 init_db
-    return TestClient(fastapi_app)
+    # 線上人數也需要登入（spec §15）：進 context manager 讓 startup 建立管理者後登入
+    with TestClient(fastapi_app) as c:
+        assert c.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-pass-1234"}).status_code == 200
+        yield c
 
 
 def test_heartbeat_counts_distinct_sessions(client):

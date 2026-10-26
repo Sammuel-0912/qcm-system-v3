@@ -175,6 +175,13 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("fact_complaint", "improvement", "TEXT"),
     ("fact_complaint", "improvement_effective_at", "TIMESTAMP WITH TIME ZONE"),
     ("fact_check_item", "kpiv_control_level", "TEXT"),
+    # RBAC（spec §15）：資料集
+    ("import_batch", "plant", "VARCHAR(8)"),
+    ("import_batch", "factory", "TEXT"),
+    ("import_batch", "line_code", "TEXT"),
+    ("import_batch", "dataset", "TEXT"),
+    ("import_batch", "data_date", "VARCHAR(8)"),
+    ("check_photo_inspection", "dataset", "TEXT"),
 )
 
 
@@ -191,6 +198,30 @@ def _add_missing_columns(engine: Engine) -> list[str]:
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
         applied.append(f"{table}.{column} 新增欄位")
+    return applied
+
+
+DEFAULT_DATASET = ("WJ1", "DCS", "PM1")
+
+
+def _backfill_dataset(engine: Engine) -> list[str]:
+    """RBAC 之前匯入的資料沒有資料集，一律歸到 WJ1-DCS-PM1（使用者確認的唯一既有產線）。"""
+    plant, factory, line = DEFAULT_DATASET
+    key = f"{plant}-{factory}-{line}"
+    applied = []
+    tables = set(inspect(engine).get_table_names())
+    with engine.begin() as conn:
+        if "import_batch" in tables:
+            n = conn.execute(
+                text("UPDATE import_batch SET plant=:p, factory=:f, line_code=:l, dataset=:k WHERE dataset IS NULL"),
+                {"p": plant, "f": factory, "l": line, "k": key},
+            ).rowcount
+            if n:
+                applied.append(f"import_batch 既有 {n} 個批次補上資料集 {key}")
+        if "check_photo_inspection" in tables:
+            n = conn.execute(text("UPDATE check_photo_inspection SET dataset=:k WHERE dataset IS NULL"), {"k": key}).rowcount
+            if n:
+                applied.append(f"check_photo_inspection 既有 {n} 筆補上資料集 {key}")
     return applied
 
 
@@ -223,6 +254,7 @@ def ensure_schema(engine: Engine) -> list[str]:
 
     # 必須在 fact_kpov 重建之後：重建用的是固定的舊欄位清單
     applied.extend(_add_missing_columns(engine))
+    applied.extend(_backfill_dataset(engine))
 
     for action in applied:
         log.warning("結構遷移：%s", action)

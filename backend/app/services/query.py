@@ -31,10 +31,21 @@ def in_bounds(value: dt.datetime | None, bounds: tuple[dt.datetime, dt.datetime]
     return bounds[0] <= value <= bounds[1]
 
 
-def active_batch(session: Session) -> ImportBatch | None:
-    return session.scalars(
-        select(ImportBatch).where(ImportBatch.is_active.is_(True)).order_by(ImportBatch.id.desc())
-    ).first()
+def active_batch(session: Session, dataset: str | None = None) -> ImportBatch | None:
+    """生效批次。dataset 給定時取該資料集（一條線）的生效批次；未給時取最新的任一生效批次（僅 AR 等全站功能使用）。"""
+    stmt = select(ImportBatch).where(ImportBatch.is_active.is_(True))
+    if dataset is not None:
+        stmt = stmt.where(ImportBatch.dataset == dataset)
+    return session.scalars(stmt.order_by(ImportBatch.id.desc())).first()
+
+
+def active_datasets(session: Session) -> list[ImportBatch]:
+    """所有資料集各自的生效批次，依資料集名稱排序。"""
+    return list(
+        session.scalars(
+            select(ImportBatch).where(ImportBatch.is_active.is_(True)).order_by(ImportBatch.dataset)
+        ).all()
+    )
 
 
 def _sort_key(value: str | None) -> str:

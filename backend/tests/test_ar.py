@@ -11,6 +11,8 @@ import pytest
 # v3 只以數據庫-1019 為準（不再相容 1008／1011／raw_data 的測試）
 DATA = pathlib.Path(__file__).resolve().parent.parent.parent / "數據庫-1019.xlsx"
 RAW = DATA
+# 匯入檔名須符合 WJ<1-8>-<產品廠>-<線別>-數據庫-<MMDD>.xlsx（spec §15）
+DATA_NAME = "WJ1-DCS-PM1-數據庫-1019.xlsx"
 
 
 # 在 import app 之前就把資料庫與資料目錄指到暫存位置：
@@ -34,6 +36,8 @@ def client():
     from fastapi.testclient import TestClient
 
     with TestClient(fastapi_app) as c:
+        # 所有 API 都要登入（spec §15）：以最高權限管理者登入
+        assert c.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-pass-1234"}).status_code == 200
         yield c
     close_all_sessions()
     # engine 是模組層級、跨測試檔共用；不清掉的話，最後匯入的批次會成為
@@ -171,7 +175,7 @@ def test_quality_bridge_links_to_active_batch(client):
     with RAW.open("rb") as fh:
         imported = client.post(
             "/api/v1/import",
-            files={"file": ("raw_data.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     assert imported.status_code == 200
 
@@ -197,7 +201,7 @@ def test_equipment_options_come_from_active_batch(client):
     with RAW.open("rb") as fh:
         client.post(
             "/api/v1/import",
-            files={"file": ("raw_data.xlsx", fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     body = client.get("/api/ar/equipment-options").json()
     codes = {o["equipmentCode"] for o in body["options"]}
@@ -214,7 +218,7 @@ def test_item_inspection_feeds_check_monitor(client):
     with V2.open("rb") as fh:
         imported = client.post(
             "/api/v1/import",
-            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     assert imported.status_code == 200, imported.text
 
@@ -254,7 +258,7 @@ def test_history_includes_pcn_and_plant_wide_ecn(client):
     with V2.open("rb") as fh:
         client.post(
             "/api/v1/import",
-            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     body = client.get("/api/v1/kpov/K00002/OT00420102/history").json()
     kinds = [c["kind"] for c in body["changes"]]
@@ -276,7 +280,7 @@ def test_photo_upload_records_inspection(client):
     with V2.open("rb") as fh:
         client.post(
             "/api/v1/import",
-            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     body = client.get("/api/v1/check-items").json()
     assert "固定絕緣片" in body["stations"]
@@ -443,7 +447,7 @@ def test_events_level_after_filter(client):
     with V2.open("rb") as fh:
         client.post(
             "/api/v1/import",
-            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     full = client.get("/api/v1/events", params={"limit": 500}).json()
     counts = full["levelCounts"]
@@ -462,7 +466,7 @@ def test_level_changes_window_kind_and_paging(client):
     with V2.open("rb") as fh:
         client.post(
             "/api/v1/import",
-            files={"file": (V2.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     now = dt.datetime.now(dt.timezone.utc)
     events = client.get("/api/v1/events", params={"limit": 500}).json()["items"]
@@ -511,7 +515,7 @@ def _import_v3(client):
     with V3.open("rb") as fh:
         res = client.post(
             "/api/v1/import",
-            files={"file": (V3.name, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"file": (DATA_NAME, fh, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
     assert res.status_code == 200, res.text
     return res.json()
@@ -783,11 +787,11 @@ def test_dashboard_hides_records_of_retired_items(client):
             [
                 CheckPhotoInspection(
                     equipment_code=item["equipmentCode"], kpov_no=item["kpovNo"], check_content=item["checkContent"],
-                    status="ok", photo_url="/api/ar/uploads/checks/new.png",
+                    status="ok", photo_url="/api/ar/uploads/checks/new.png", dataset="WJ1-DCS-PM1",
                 ),
                 CheckPhotoInspection(
                     equipment_code=item["equipmentCode"], kpov_no=item["kpovNo"], check_content="生產時是否有進行數量管控",
-                    status="ok", photo_url="/api/ar/uploads/checks/old.png",
+                    status="ok", photo_url="/api/ar/uploads/checks/old.png", dataset="WJ1-DCS-PM1",
                 ),
             ]
         )

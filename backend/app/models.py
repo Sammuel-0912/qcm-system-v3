@@ -48,6 +48,37 @@ class ImportBatch(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     error_log: Mapped[dict | None] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # RBAC（spec §15）：資料集＝一條線的資料，由檔名 WJ<1-8>-<產品廠>-<線別>-數據庫-<MMDD> 解析。
+    # 每個 dataset 各自只有一個生效批次；舊資料補為 WJ1-DCS-PM1。
+    plant: Mapped[str | None] = mapped_column(String(8))
+    factory: Mapped[str | None] = mapped_column(Text)
+    line_code: Mapped[str | None] = mapped_column(Text)
+    dataset: Mapped[str | None] = mapped_column(Text, index=True)
+    data_date: Mapped[str | None] = mapped_column(String(8))
+
+
+USER_ROLES = ("super_admin", "plant_admin", "user")
+
+
+class User(Base):
+    """系統帳號（spec §15 RBAC）。super_admin 不屬於任何廠（plant 為空）。"""
+
+    __tablename__ = "app_user"
+    __table_args__ = (CheckConstraint(f"role IN {USER_ROLES}", name="ck_user_role"),)
+
+    id: Mapped[int] = _pk()
+    username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    plant: Mapped[str | None] = mapped_column(String(8))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 停用、重設密碼時遞增，舊的 JWT 立即失效
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+    last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DimDetectionMethod(Base):
@@ -520,6 +551,8 @@ class CheckPhotoInspection(Base):
     status: Mapped[str] = mapped_column(String(8), nullable=False, default="ok")
     note: Mapped[str | None] = mapped_column(Text)
     photo_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # 所屬資料集（一條線）；不同廠可能有相同的設備代碼
+    dataset: Mapped[str | None] = mapped_column(Text)
     inspected_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
     )
