@@ -59,7 +59,7 @@ cd ~/qcm
 gunzip -c qcm-images.tar.gz | docker load
 
 cp .env.example .env
-vi .env                                    # 必改 POSTGRES_PASSWORD，視需要改 WEB_PORT
+vi .env                                    # 必改 POSTGRES_PASSWORD、QCM_JWT_SECRET、QCM_ADMIN_PASSWORD，視需要改 WEB_PORT
 
 docker compose up -d --no-build            # --no-build：直接用載入的映像，不找原始碼
 docker compose ps                          # 三個服務都顯示 healthy 即完成
@@ -83,7 +83,7 @@ docker image prune -f                      # 清掉舊版映像
 ```bash
 git clone https://github.com/Sammuel-0912/qcm-system.git qcm
 cd qcm
-cp .env.example .env && vi .env            # 必改 POSTGRES_PASSWORD
+cp .env.example .env && vi .env            # 必改 POSTGRES_PASSWORD、QCM_JWT_SECRET、QCM_ADMIN_PASSWORD
 docker compose up -d --build
 ```
 
@@ -93,9 +93,18 @@ docker compose up -d --build
 
 ## 首次使用
 
-1. 開 `http://<VM IP>:8080`，畫面會提示「尚無資料，請先匯入 Excel」。
-2. 按右上角「匯入資料」，上傳 `數據庫-1011.xlsx`（或最新版）。
-3. 匯入完成後即可使用；之後每次有新資料，同樣從畫面匯入。
+1. 開 `http://<VM IP>:8080`，用 `.env` 的 `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD` 登入（最高權限管理者）。
+   登入後建議先從右上角選單 **修改密碼**。
+2. 畫面會提示「尚無資料，請管理者匯入 Excel」。按 **匯入資料**，上傳例如 `WJ1-DCS-PM1-數據庫-1026.xlsx`。
+   **檔名必須是 `廠-產品廠-線別-數據庫-月日.xlsx`**（廠為 WJ1～WJ8），系統依檔名決定資料屬於哪個廠、哪條線；
+   同一條線只保留最新一次匯入，不同線互不影響。
+3. 側邊欄 **系統管理 › 使用者管理**：指派各廠的廠管理者；廠管理者再自行新增該廠的一般使用者。
+
+| 角色 | 看資料 | 拍照點檢 | 匯入 Excel | 使用者管理 |
+|---|---|---|---|---|
+| 最高權限管理者 | 所有廠 | ✓ | 任何廠 | 所有帳號，可指派廠管理者 |
+| 廠管理者 | 自己的廠 | ✓ | 只限自己廠的檔名 | 自己廠的一般使用者 |
+| 一般使用者 | 自己的廠 | ✓ | ✗ | ✗ |
 
 防火牆需開放 `WEB_PORT`（例：`sudo firewall-cmd --add-port=8080/tcp --permanent && sudo firewall-cmd --reload`，
 或 Ubuntu 的 `sudo ufw allow 8080/tcp`）。資料庫與 api 都不對外，不需要開。
@@ -111,6 +120,8 @@ docker compose up -d --build
 | `WEB_PORT` | `8080` | 對外網頁 port |
 | `TZ` | `Asia/Taipei` | 容器時區 |
 | `QCM_SITE_UTC_OFFSET` | `8` | 廠區時區，決定 Level 3 點檢的日班／夜班切分 |
+| `QCM_JWT_SECRET` | （必填） | 登入權杖的簽章金鑰，用長隨機字串（`openssl rand -hex 32`）。沒設定時每次重啟都要重新登入；改掉它所有人都會被登出 |
+| `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD` | （必填） | 第一位最高權限管理者，密碼至少 8 碼。**只在資料庫還沒有最高權限管理者時建立**；之後改密碼請從網頁改，改 `.env` 不會生效 |
 
 > PostgreSQL 只在 volume 第一次建立時套用帳密。之後要改密碼，需在資料庫內 `ALTER USER`，
 > 或備份後刪除 `pgdata` volume 重建。

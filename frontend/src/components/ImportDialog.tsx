@@ -2,7 +2,8 @@ import { useState } from 'react'
 
 import { api } from '../api/client'
 
-type Props = { onClose: () => void; onImported: () => void }
+/** onClose 帶回剛匯入的資料集（例 WJ1-DCS-PM1）；沒有成功匯入時為 undefined */
+type Props = { onClose: (importedDataset?: string) => void }
 
 type Report = {
   rowCounts: Record<string, number>
@@ -28,10 +29,12 @@ const COUNT_LABELS: Record<string, string> = {
   levelEvents: '等級異動事件',
 }
 
-export function ImportDialog({ onClose, onImported }: Props) {
+export function ImportDialog({ onClose }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<Report | null>(null)
+  const [imported, setImported] = useState<string | undefined>(undefined)
+  const close = () => onClose(imported)
 
   async function handleFile(file: File) {
     setBusy(true)
@@ -40,7 +43,7 @@ export function ImportDialog({ onClose, onImported }: Props) {
     try {
       const result = await api.import(file)
       setReport(result.report)
-      onImported()
+      setImported(result.batch?.dataset ?? undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : '匯入失敗')
     } finally {
@@ -53,16 +56,20 @@ export function ImportDialog({ onClose, onImported }: Props) {
       <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">匯入資料</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700" aria-label="關閉">
+          <button onClick={close} className="text-slate-400 hover:text-slate-700" aria-label="關閉">
             ✕
           </button>
         </div>
 
         {!report && (
           <>
-            <p className="mb-4 text-sm text-slate-600">
-              上傳與 <code className="rounded bg-slate-100 px-1">raw_data.xlsx</code> 同格式的 Excel
-              檔。匯入為單一交易，失敗不會留下半套資料。
+            <p className="mb-2 text-sm text-slate-600">
+              上傳各廠共用模板的 Excel 檔。匯入為單一交易，失敗不會留下半套資料；同一條線只保留最新一次匯入。
+            </p>
+            <p className="mb-4 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              檔名格式：<code className="rounded bg-white px-1">廠-產品廠-線別-數據庫-月日.xlsx</code>
+              ，例：<code className="rounded bg-white px-1">WJ1-DCS-PM1-數據庫-1026.xlsx</code>
+              。系統依檔名判斷資料屬於哪個廠、哪條線；廠管理者只能匯入自己廠的檔案。
             </p>
             <input
               type="file"
@@ -87,7 +94,7 @@ export function ImportDialog({ onClose, onImported }: Props) {
         {report && (
           <div className="space-y-4 text-sm">
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-800">
-              匯入成功。
+              匯入成功{imported ? `：${imported}` : ''}。
             </div>
 
             <div>
@@ -152,7 +159,7 @@ export function ImportDialog({ onClose, onImported }: Props) {
             )}
 
             <button
-              onClick={onClose}
+              onClick={close}
               className="w-full rounded-md bg-slate-900 py-2 text-sm font-medium text-white hover:bg-slate-700"
             >
               完成

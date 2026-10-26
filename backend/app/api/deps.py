@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from ..db import get_session
@@ -63,9 +63,11 @@ def current_scope(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
     x_qcm_dataset: str | None = Header(None, alias=DATASET_HEADER),
+    dataset: str | None = Query(None, include_in_schema=False),
 ) -> Scope:
+    # 一般 API 用 header；瀏覽器直接下載（<a href> 匯出 Excel）帶不了 header，改用 ?dataset=，權限檢查相同
     batches = visible_batches(session, user)
-    wanted = (x_qcm_dataset or "").strip().upper()
+    wanted = (x_qcm_dataset or dataset or "").strip().upper()
     if wanted:
         if not A.can_view_plant(user.role, user.plant, A.dataset_plant(wanted)):
             raise HTTPException(status_code=403, detail=f"沒有 {A.dataset_plant(wanted)} 的權限")

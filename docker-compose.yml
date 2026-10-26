@@ -30,6 +30,11 @@ services:
       # 廠區時區（Level 3 點檢班別用），預設 UTC+8
       QCM_SITE_UTC_OFFSET: ${QCM_SITE_UTC_OFFSET:-8}
       TZ: ${TZ:-Asia/Taipei}
+      # 登入（spec §15）：JWT 簽章金鑰；沒設定時每次重啟都要重新登入
+      QCM_JWT_SECRET: ${QCM_JWT_SECRET:-}
+      # 第一位最高權限管理者：資料庫裡還沒有任何最高權限管理者時才會建立
+      QCM_ADMIN_USERNAME: ${QCM_ADMIN_USERNAME:-}
+      QCM_ADMIN_PASSWORD: ${QCM_ADMIN_PASSWORD:-}
     volumes:
       # 拍照點檢的照片與 AR 設備圖檔存在 QCM_DATA_DIR/ar-uploads，
       # 沒有這個 volume 的話重新建置容器就會全部消失。

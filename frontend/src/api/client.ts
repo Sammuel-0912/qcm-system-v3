@@ -1,3 +1,5 @@
+import { apiFetch, withDataset } from './session'
+
 const BASE = '/api/v1'
 
 export type LevelCounts = {
@@ -448,13 +450,53 @@ export type PhotoInspectionStat = {
 
 export class ApiError extends Error {}
 
+export type Role = 'super_admin' | 'plant_admin' | 'user'
+
+export type AuthUser = {
+  id: number
+  username: string
+  displayName: string
+  role: Role
+  roleLabel: string
+  plant: string | null
+  isActive: boolean
+  createdAt: string | null
+  lastLoginAt: string | null
+}
+
+/** 資料集＝一條線的生效資料，例 WJ1-DCS-PM1 */
+export type DatasetInfo = {
+  key: string
+  plant: string
+  factory: string
+  line: string
+  filename: string
+  importedAt: string | null
+}
+
+export const PLANTS = ['WJ1', 'WJ2', 'WJ3', 'WJ4', 'WJ5', 'WJ6', 'WJ7', 'WJ8'] as const
+
+async function send<T>(method: string, path: string, body: unknown, fallback: string): Promise<T> {
+  const res = await apiFetch(`${BASE}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({ detail: res.statusText }))
+  if (!res.ok) {
+    const detail = Array.isArray(data.detail) ? data.detail.map((d: { msg: string }) => d.msg).join('；') : data.detail
+    throw new ApiError(typeof detail === 'string' ? detail : fallback)
+  }
+  return data as T
+}
+
 async function get<T>(path: string, params: Record<string, string | undefined> = {}): Promise<T> {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value) search.set(key, value)
   }
   const query = search.toString()
-  const res = await fetch(`${BASE}${path}${query ? `?${query}` : ''}`)
+  const res = await apiFetch(`${BASE}${path}${query ? `?${query}` : ''}`)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(detail.detail ?? '請求失敗')
@@ -521,7 +563,7 @@ export const api = {
     form.append('status', p.status)
     if (p.note) form.append('note', p.note)
     form.append('file', p.file)
-    const res = await fetch(`${BASE}/check-inspections`, { method: 'POST', body: form })
+    const res = await apiFetch(`${BASE}/check-inspections`, { method: 'POST', body: form })
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '上傳失敗')
     return body as { id: number; status: string; photoUrl: string; inspectedAt: string }
@@ -535,18 +577,36 @@ export const api = {
     const search = new URLSearchParams()
     for (const [key, value] of Object.entries(p)) if (value) search.set(key, value)
     const query = search.toString()
-    return `${BASE}/check-inspections/export${query ? `?${query}` : ''}`
+    // 瀏覽器直接下載帶不了 header，資料集放查詢參數
+    return withDataset(`${BASE}/check-inspections/export${query ? `?${query}` : ''}`)
   },
+  // ── 登入與帳號（spec §15 RBAC）──
+  async login(username: string, password: string) {
+    return send<AuthUser>('POST', '/auth/login', { username, password }, '登入失敗')
+  },
+  async logout() {
+    await apiFetch(`${BASE}/auth/logout`, { method: 'POST' })
+  },
+  me: () => get<AuthUser & { datasets: DatasetInfo[] }>('/auth/me'),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    send<{ ok: boolean }>('POST', '/auth/password', { oldPassword, newPassword }, '修改密碼失敗'),
+  users: () => get<AuthUser[]>('/users'),
+  createUser: (u: { username: string; displayName: string; password: string; role: Role; plant: string | null }) =>
+    send<AuthUser>('POST', '/users', u, '新增帳號失敗'),
+  updateUser: (id: number, patch: { displayName?: string; role?: Role; plant?: string | null; isActive?: boolean }) =>
+    send<AuthUser>('PATCH', `/users/${id}`, patch, '更新帳號失敗'),
+  resetPassword: (id: number, password: string) =>
+    send<AuthUser>('POST', `/users/${id}/reset-password`, { password }, '重設密碼失敗'),
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)
-    const res = await fetch(`${BASE}/import`, { method: 'POST', body: form })
+    const res = await apiFetch(`${BASE}/import`, { method: 'POST', body: form })
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(body.detail ?? '匯入失敗')
     return body
   },
   async heartbeat(sid: string): Promise<{ online: number }> {
-    const res = await fetch(`${BASE}/presence/heartbeat`, {
+    const res = await apiFetch(`${BASE}/presence/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sid }),

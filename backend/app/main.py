@@ -47,8 +47,8 @@ def get_upload(key: str, user: User = Depends(current_user), session: Session = 
     data = get_storage().get(key)
     if data is None:
         raise HTTPException(status_code=404, detail="找不到檔案")
-    # 檔名含隨機碼，內容不會變；但需登入才能看，只允許瀏覽器私有快取
-    return Response(data, media_type=content_type_for(key), headers={"Cache-Control": "private, max-age=86400"})
+    # 需登入才能看：不讓瀏覽器快取（登出或帳號停用後，共用電腦上不能再從快取看到照片）
+    return Response(data, media_type=content_type_for(key), headers={"Cache-Control": "private, no-store"})
 
 
 @app.on_event("startup")

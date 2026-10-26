@@ -252,7 +252,7 @@ def ensure_bootstrap_admin(session: Session) -> None:
     except ValueError as exc:
         log.error("QCM_ADMIN_PASSWORD 不符規則（%s），未建立管理者", exc)
         return
-    session.add(User(username=username, display_name="最高權限管理者", password_hash=A.hash_password(password),
+    session.add(User(username=username, display_name="系統管理員", password_hash=A.hash_password(password),
                      role=A.ROLE_SUPER, plant=None))
     session.commit()
     log.warning("已建立最高權限管理者帳號：%s", username)

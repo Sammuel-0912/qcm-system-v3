@@ -1,3 +1,4 @@
+import { apiFetch } from './session'
 // AR 點檢 API。與品控力同源，固定走 /api/ar——
 // 原專案的 resolveBackendUrl() 會組出 http://<hostname>:8000 這種跨來源位址，
 // 合併為單一服務後不再需要（ar-integration-spec.md REQ-API-03）。
@@ -64,7 +65,7 @@ export type DeviceQuality =
 export class ArApiError extends Error {}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + path, init)
+  const res = await apiFetch(BASE + path, init)
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     const detail = body?.detail

@@ -57,6 +57,17 @@ git add -A && git commit -m "..." && git push
 
    Zeabur 會自行注入 `PORT`，明確釘死可確保與 `web` 的 `API_URL` port 一致。
 
+4-1. **Variables** 再加登入用的三條（spec §15）：
+
+   ```
+   QCM_JWT_SECRET=<長隨機字串，例：openssl rand -hex 32 的結果>
+   QCM_ADMIN_USERNAME=admin
+   QCM_ADMIN_PASSWORD=<至少 8 碼>
+   ```
+
+   - `QCM_JWT_SECRET` 沒設定時，api 每次重新部署後所有人都要重新登入。
+   - `QCM_ADMIN_*` 只在資料庫裡**還沒有最高權限管理者**時建立第一位；之後請從網頁右上角改密碼。
+
 5. 記下內網主機名：**Networking 分頁 → Private Domain**，形如 `xxxx.zeabur.internal`。
 
    > ⚠️ Zeabur 文件註明「**改服務名稱不會改變 private hostname**」，
@@ -86,8 +97,13 @@ git add -A && git commit -m "..." && git push
 
 ## 5. 匯入資料
 
-打開產生的網域 → 用畫面上的匯入功能上傳 `raw_data.xlsx`。
-首次開啟會顯示「尚無資料，請先匯入 Excel」，這是正常的。
+打開產生的網域 → 用 `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD` 登入 → 按 **匯入資料**。
+首次登入會顯示「尚無資料，請管理者匯入 Excel」，這是正常的。
+
+檔名必須是 `廠-產品廠-線別-數據庫-月日.xlsx`，例如 `WJ1-DCS-PM1-數據庫-1026.xlsx`；
+系統依檔名決定資料屬於哪個廠、哪條線。之後到 **系統管理 › 使用者管理** 指派各廠的廠管理者。
+
+> 舊版（沒有登入功能）升級上來時，既有資料會自動歸到 `WJ1-DCS-PM1`。
 
 ---
 

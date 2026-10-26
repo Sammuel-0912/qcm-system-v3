@@ -159,6 +159,9 @@ def test_plant_isolation_multi_line_and_import_rules(app_ctx):
     assert op.get("/api/v1/repairs", params={"pageSize": 50}).json()["total"] == 30  # 預設＝自己廠第一條線（1026）
     assert op.get("/api/v1/filters", headers={"X-QCM-Dataset": "WJ1-DCS-PM1"}).status_code == 403
     assert op.get("/api/v1/filters", headers={"X-QCM-Dataset": "WJ2-DCS-PM9"}).status_code == 404
+    # 匯出 Excel 是瀏覽器直接下載，帶不了 header，改用 ?dataset=，權限檢查相同
+    assert op.get("/api/v1/check-inspections/export", params={"dataset": "WJ1-DCS-PM1"}).status_code == 403
+    assert op.get("/api/v1/check-inspections/export", params={"dataset": "WJ2-DCS-PM1"}).json()["detail"] == "沒有符合條件的點檢紀錄可匯出"  # 有權限，只是還沒有紀錄
     assert _import(op, V1026, "WJ2-DCS-PM1-數據庫-1026.xlsx").status_code == 403
     assert op.get("/api/v1/users").status_code == 403
     # 廠管理者不能匯入別廠
