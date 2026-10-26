@@ -504,12 +504,37 @@ async function get<T>(path: string, params: Record<string, string | undefined> =
   return res.json() as Promise<T>
 }
 
+/** 總覽廣播（spec §16）：整條線、不吃篩選器 */
+export type BroadcastResponse = {
+  window: ChangeWindow
+  since: string
+  level3: { start: number; now: number; delta: number }
+  inspection: {
+    shift: { name: string; label: string; start: string; end: string; ended: boolean }
+    items: number
+    expected: number
+    completed: number
+    warn: number
+  }
+  escalations: {
+    station: string
+    kpovNo: string
+    kpovName: string
+    equipmentCode: string
+    levelBefore: number | null
+    levelAfter: number
+    at: string
+  }[]
+  escalatedStations: string[]
+}
+
 type Scope = { station?: string; line?: string; attribute?: string; target?: string }
 
 export const api = {
   filters: () => get<FiltersResponse>('/filters'),
   quadrant: (p: Scope & { view: string; window?: ChangeWindow }) => get<QuadrantResponse>('/quadrant', p),
   checkMonitor: (p: Scope) => get<CheckMonitorResponse>('/check-monitor', p),
+  broadcast: (window: ChangeWindow) => get<BroadcastResponse>('/broadcast', { window }),
   trend: (p: Scope) => get<TrendResponse>('/trend', p),
   kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string; window?: ChangeWindow }) =>
     get<{ total: number; items: KpovItem[] }>('/kpov', p),

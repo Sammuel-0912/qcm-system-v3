@@ -38,7 +38,18 @@ from ...importer.mapping import REPAIR_EIGHT_D_PREFIX as M_REPAIR_PREFIX
 from ...services.eight_d import eight_d_out
 from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
-from ...services.check_monitor import check_items, item_key, monitor_rows, shift_of, shift_payload, summarize_rows, utc
+from ...services.check_monitor import (
+    EXPORT_SHIFT_NAMES,
+    SLOT_OK,
+    SLOT_WARN,
+    check_items,
+    item_key,
+    monitor_rows,
+    shift_of,
+    shift_payload,
+    summarize_rows,
+    utc,
+)
 from ...services import presence
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
@@ -529,6 +540,78 @@ def list_level_changes(
         "total": total,
         "pages": pages,
         "items": items,
+    }
+
+
+# --------------------------------------------------------------------------- 總覽廣播
+
+
+@router.get("/broadcast")
+def get_broadcast(
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """總覽頁頂端的廣播（spec §16）。一律看整條線、不吃篩選器：
+
+    - level3：Level 3 個數，期初（期間第一天）→ 現在，與象限圖同一套算法
+    - inspection：當班（白班／夜班）的點檢次數：已點檢／應點檢、其中異常
+    - escalations：期間內等級提升的站別（ESCALATED 事件，依不良發生時間）
+    """
+    batch = scope.batch
+    now = dt.datetime.now(dt.timezone.utc)
+    since, _ = window_bounds(window)
+    states = build_states(session, batch.id)
+    start_states = build_states(session, batch.id, as_of=since)
+    level3_now = sum(1 for s in states if s.level_for("current") == 3)
+    level3_start = sum(1 for s in start_states if s.level_for("current") == 3)
+
+    rows = monitor_rows(session, check_items(session, batch.id), now=now, dataset=scope.dataset)
+    slots = [slot for row in rows for slot in row["slots"]]
+    shift = shift_payload(now)
+
+    kpovs = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in states}
+    events = session.scalars(
+        select(FactLevelEvent)
+        .where(FactLevelEvent.batch_id == batch.id, FactLevelEvent.transition == CHANGE_KINDS_UI["escalated"])
+        .order_by(FactLevelEvent.effective_at.desc(), FactLevelEvent.id.desc())
+    ).all()
+    escalations = []
+    for e in events:
+        at = utc(e.effective_at)
+        kpov = kpovs.get((e.kpov_no, e.equipment_code))
+        if kpov is None or not since <= at <= now:
+            continue
+        escalations.append(
+            {
+                "station": kpov.station,
+                "kpovNo": e.kpov_no,
+                "kpovName": kpov.kpov_name,
+                "equipmentCode": e.equipment_code,
+                "levelBefore": e.level_before,
+                "levelAfter": e.level_after,
+                "at": at.isoformat(),
+            }
+        )
+
+    return {
+        "window": window,
+        "since": since.isoformat(),
+        "level3": {"start": level3_start, "now": level3_now, "delta": level3_now - level3_start},
+        "inspection": {
+            # 使用者慣稱白班／夜班（與點檢紀錄匯出相同）
+            "shift": {
+                **shift,
+                "name": EXPORT_SHIFT_NAMES.get(shift["name"], shift["name"]),
+                "label": shift["label"].replace(shift["name"], EXPORT_SHIFT_NAMES.get(shift["name"], shift["name"]), 1),
+            },
+            "items": len(rows),
+            "expected": len(slots),
+            "completed": sum(1 for slot in slots if slot["state"] in (SLOT_OK, SLOT_WARN)),
+            "warn": sum(1 for slot in slots if slot["state"] == SLOT_WARN),
+        },
+        "escalations": escalations,
+        "escalatedStations": sorted({x["station"] for x in escalations}),
     }
 
 

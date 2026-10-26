@@ -18,6 +18,7 @@ import {
   type TrendResponse,
 } from '../api/client'
 import { HOTSPOTS } from '../layoutConfig'
+import { BroadcastBar } from '../components/BroadcastBar'
 import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
@@ -284,6 +285,9 @@ export default function QualityPage() {
     <AppShell title="總覽" actions={headerActions}>
 
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+        {/* ── 廣播：Level 3 個數、當班點檢、等級提升的站別（整條線，只跟期間連動） ── */}
+        <BroadcastBar window={changeWindow} windowHint={windowHint} reloadKey={reloadKey} />
+
         {/* ── 頂部：篩選器（只影響象限圖與異動總覽） ── */}
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-end gap-4">
