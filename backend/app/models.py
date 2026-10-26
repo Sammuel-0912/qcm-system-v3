@@ -558,6 +558,33 @@ class CheckPhotoInspection(Base):
     )
 
 
+class CheckCountImport(Base):
+    """匯入的歷史點檢結果（spec §19）：只用來累加點檢看板站別卡片的正常／異常次數，不出現在點檢紀錄。
+
+    重新部署後拍照點檢紀錄會歸零，由最高權限管理者把舊系統匯出的點檢紀錄 Excel 匯入補回數量。
+    以（資料集, 設備代碼, 點檢內容, 點檢時間）去重：同一份檔案重複匯入、或與系統內的拍照點檢重疊都不會重算。
+    """
+
+    __tablename__ = "check_count_import"
+    __table_args__ = (
+        CheckConstraint(f"status IN {AR_STATUSES}", name="ck_check_count_import_status"),
+        UniqueConstraint("dataset", "equipment_code", "check_content", "inspected_at", name="uq_check_count_import_row"),
+    )
+
+    id: Mapped[int] = _pk()
+    dataset: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    station: Mapped[str | None] = mapped_column(Text)
+    check_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    inspected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str | None] = mapped_column(Text)  # 匯入的檔名
+    imported_by: Mapped[str | None] = mapped_column(Text)
+    imported_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+
+
 SOLUTION_TYPES = ("technical", "management")
 TECH_TARGETS = ("KPOV", "KPIV")
 

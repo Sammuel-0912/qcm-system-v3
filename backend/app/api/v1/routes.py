@@ -19,10 +19,11 @@ from ...config import SITE_UTC_OFFSET_HOURS
 from ...services.storage import get_storage, key_from_url
 from ...services.storage import url_for as storage_url_for
 from ...db import get_session
-from ..deps import Scope, current_scope, current_user, require_admin
+from ..deps import Scope, current_scope, current_user, require_admin, require_super
 from ...services.auth import can_import, can_view_plant, parse_dataset_filename
 from ...importer.excel import ImportError_, import_workbook
 from ...models import (
+    CheckCountImport,
     CheckPhotoInspection,
     DimEquipment,
     FactChangeRecord,
@@ -52,6 +53,7 @@ from ...services.check_monitor import (
 )
 from ...services import presence
 from ...services.check_trend import check_trend
+from ...services.count_import import CountImportError, parse_count_workbook
 from ...services.due import (
     DUE_FILTERS,
     due_matches,
@@ -1262,10 +1264,26 @@ def check_inspection_stats(scope: Scope = Depends(current_scope), session: Sessi
         )
         entry["total"] += 1
         entry["okCount" if record.status == "ok" else "warnCount"] += 1
+    # 匯入的歷史點檢數量（spec §19）：只累加卡片，不受「目前點檢項目」過濾（舊點檢內容的文字可能已改）
+    for row in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)):
+        entry = stats.setdefault(
+            row.equipment_code,
+            {
+                "equipmentCode": row.equipment_code,
+                "station": names.get(row.equipment_code) or row.station or row.equipment_code,
+                "total": 0,
+                "okCount": 0,
+                "warnCount": 0,
+            },
+        )
+        entry["total"] += 1
+        entry["okCount" if row.status == "ok" else "warnCount"] += 1
+        entry["importedCount"] = entry.get("importedCount", 0) + 1
     order = {code: i for i, code in enumerate(names)}
     rows = sorted(stats.values(), key=lambda s: (order.get(s["equipmentCode"], len(order)), s["equipmentCode"]))
     for row in rows:
         row["okRate"] = round(row["okCount"] / row["total"], 4)
+        row.setdefault("importedCount", 0)
     return rows
 
 
@@ -1277,6 +1295,117 @@ def check_inspection_trend(
 ):
     """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
     return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days)
+
+
+def _count_import_summary(session: Session, dataset: str) -> dict:
+    rows = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == dataset)).all()
+    files: dict[str, dict] = {}
+    for r in rows:
+        f = files.setdefault(r.source or "", {"source": r.source, "count": 0, "okCount": 0, "warnCount": 0,
+                                               "from": None, "to": None, "importedAt": None, "importedBy": r.imported_by})
+        at, imported = utc(r.inspected_at), utc(r.imported_at)
+        f["count"] += 1
+        f["okCount" if r.status == "ok" else "warnCount"] += 1
+        f["from"] = min(f["from"] or at, at)
+        f["to"] = max(f["to"] or at, at)
+        f["importedAt"] = max(f["importedAt"] or imported, imported)
+    out = sorted(files.values(), key=lambda f: f["importedAt"], reverse=True)
+    for f in out:
+        f.update({k: f[k].isoformat() for k in ("from", "to", "importedAt")})
+    return {"dataset": dataset, "total": len(rows), "files": out}
+
+
+@router.get("/check-inspections/count-import")
+def count_import_summary(
+    _: User = Depends(require_super), scope: Scope = Depends(current_scope), session: Session = Depends(get_session)
+):
+    """這條線已匯入的歷史點檢數量（依檔案彙總）。"""
+    return _count_import_summary(session, scope.dataset)
+
+
+@router.post("/check-inspections/count-import")
+def import_check_counts(
+    file: UploadFile = File(...),
+    actor: User = Depends(require_super),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """匯入歷史點檢數量（spec §19，最高權限管理者）：只累加點檢看板卡片的正常／異常次數，不建立點檢紀錄。
+
+    以（設備代碼, 點檢內容, 點檢時間）去重：已匯入過、或系統內已有同一筆拍照點檢的都略過。
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=422, detail="請上傳 .xlsx 檔")
+    tmp = Path(tempfile.mkdtemp()) / "upload.xlsx"
+    try:
+        with tmp.open("wb") as fh:
+            shutil.copyfileobj(file.file, fh)
+        try:
+            parsed = parse_count_workbook(str(tmp))
+        except CountImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    def key(code, content, at):
+        return (code, (content or "").strip(), utc(at).replace(microsecond=0))
+
+    existing = {
+        key(r.equipment_code, r.check_content, r.inspected_at)
+        for r in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset))
+    } | {
+        key(r.equipment_code, r.check_content, r.inspected_at)
+        for r in session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.dataset == scope.dataset))
+    }
+    names = _station_names(session, scope.batch)
+    source = os.path.basename(file.filename)
+    now = dt.datetime.now(dt.timezone.utc)
+    added = {"ok": 0, "warn": 0}
+    stations: dict[str, dict] = {}
+    duplicates = 0
+    for row in parsed.rows:
+        k = key(row.equipment_code, row.check_content, row.inspected_at)
+        if k in existing:
+            duplicates += 1
+            continue
+        existing.add(k)
+        session.add(CheckCountImport(
+            dataset=scope.dataset, equipment_code=row.equipment_code, station=row.station,
+            check_content=row.check_content, status=row.status, inspected_at=row.inspected_at,
+            source=source, imported_by=actor.username, imported_at=now,
+        ))
+        added[row.status] += 1
+        st = stations.setdefault(row.equipment_code, {
+            "equipmentCode": row.equipment_code,
+            "station": names.get(row.equipment_code) or row.station or row.equipment_code,
+            "okCount": 0, "warnCount": 0,
+        })
+        st["okCount" if row.status == "ok" else "warnCount"] += 1
+    session.commit()
+    return {
+        "dataset": scope.dataset,
+        "source": source,
+        "added": added["ok"] + added["warn"],
+        "addedOk": added["ok"],
+        "addedWarn": added["warn"],
+        "duplicates": duplicates,
+        "invalid": parsed.invalid,
+        "invalidReasons": parsed.reasons,
+        "stations": sorted(stations.values(), key=lambda s: s["station"]),
+        "summary": _count_import_summary(session, scope.dataset),
+    }
+
+
+@router.delete("/check-inspections/count-import")
+def clear_check_counts(
+    _: User = Depends(require_super), scope: Scope = Depends(current_scope), session: Session = Depends(get_session)
+):
+    """清除這條線匯入的歷史點檢數量（誤匯時用）；不影響拍照點檢紀錄。"""
+    rows = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)).all()
+    for r in rows:
+        session.delete(r)
+    session.commit()
+    return {"deleted": len(rows)}
 
 
 # 點檢紀錄是稽核證據，不提供刪除 API（使用者 2026-10-20 決定）。

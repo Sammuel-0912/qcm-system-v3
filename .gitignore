@@ -10,3 +10,4 @@ backend/data/
 # 離線部署的映像打包檔（DEPLOY.vm.md 方式 A）
 qcm-images.tar.gz
 qcm-images.tar
+*jpg

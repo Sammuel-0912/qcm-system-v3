@@ -512,6 +512,27 @@ export type PhotoInspectionStat = {
   okCount: number
   warnCount: number
   okRate: number
+  /** 其中由「匯入歷史點檢數量」補回的次數（spec §19） */
+  importedCount: number
+}
+
+/** 匯入歷史點檢數量（spec §19，最高權限管理者） */
+export type CountImportSummary = {
+  dataset: string
+  total: number
+  files: { source: string | null; count: number; okCount: number; warnCount: number; from: string; to: string; importedAt: string; importedBy: string | null }[]
+}
+export type CountImportResult = {
+  dataset: string
+  source: string
+  added: number
+  addedOk: number
+  addedWarn: number
+  duplicates: number
+  invalid: number
+  invalidReasons: string[]
+  stations: { equipmentCode: string; station: string; okCount: number; warnCount: number }[]
+  summary: CountImportSummary
 }
 
 export class ApiError extends Error {}
@@ -690,6 +711,16 @@ export const api = {
     send<AuthUser>('PATCH', `/users/${id}`, patch, '更新帳號失敗'),
   resetPassword: (id: number, password: string) =>
     send<AuthUser>('POST', `/users/${id}/reset-password`, { password }, '重設密碼失敗'),
+  countImportSummary: () => get<CountImportSummary>('/check-inspections/count-import'),
+  async countImport(file: File): Promise<CountImportResult> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await apiFetch(`${BASE}/check-inspections/count-import`, { method: 'POST', body: form })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '匯入失敗')
+    return body
+  },
+  clearCountImport: () => send<{ deleted: number }>('DELETE', '/check-inspections/count-import', undefined, '清除失敗'),
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

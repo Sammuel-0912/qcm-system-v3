@@ -402,6 +402,7 @@ def test_photo_inspection_dashboard(client):
             "okCount": 1,
             "warnCount": 1,
             "okRate": 0.5,
+            "importedCount": 0,  # 匯入的歷史點檢數量（spec §19）
         }
     ]
 
