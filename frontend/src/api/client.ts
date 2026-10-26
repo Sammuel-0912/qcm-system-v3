@@ -139,6 +139,49 @@ export type LevelChangesResponse = {
 
 export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
 
+/** 完成期限（spec §17）：8D 預計完成 vs 實際完成 */
+export type DueKey = 'planned' | 'overdue' | 'lt7' | 'd7_14' | 'gt14'
+export type Due = {
+  status: 'planned' | 'ontime' | 'overdue'
+  overdueDays: number
+  bucket: 'lt7' | 'd7_14' | 'gt14' | null
+  plannedAt: string
+  doneAt: string | null
+}
+export type DueStats = Record<DueKey, number>
+
+/** 製程風險管理／客訴案件管理的篩選（日期為 YYYY-MM-DD，起訖皆含） */
+export type ListFilter = {
+  occurredFrom: string
+  occurredTo: string
+  /** 製程＝機種；客訴＝客戶 */
+  groups: string[]
+  stations: string[]
+  kpovs: string[]
+  improvedFrom: string
+  improvedTo: string
+  due: DueKey | ''
+}
+
+export type FilteredPaged<T> = Paged<T> & {
+  dueStats: DueStats
+  options: { groups: string[]; stations: string[]; kpovs: { value: string; label: string }[] }
+}
+
+function listParams(f: ListFilter, page: number) {
+  return {
+    occurredFrom: f.occurredFrom || undefined,
+    occurredTo: f.occurredTo || undefined,
+    group: f.groups,
+    station: f.stations,
+    kpov: f.kpovs,
+    improvedFrom: f.improvedFrom || undefined,
+    improvedTo: f.improvedTo || undefined,
+    due: f.due || undefined,
+    page: String(page),
+  }
+}
+
 export type LevelShift = { before: number | null; after: number | null; planned: boolean }
 
 /**
@@ -279,6 +322,10 @@ export type Complaint = {
   emergencyMeasureAt: string | null
   improvement: string | null
   improvementAt: string | null
+  /** 清單才有：KPOV 對應的站別（對不到時為製程單元）、KPOV 名稱、完成期限 */
+  station?: string | null
+  kpovName?: string | null
+  due?: Due | null
   eightD: EightD | null
   site: string | null
   plant: string | null
@@ -314,6 +361,7 @@ export type RepairRow = {
   improvePlanned: boolean
   levelBefore: number | null
   levelAfter: number | null
+  due: Due | null
 }
 
 export type RepairDetail = {
@@ -490,10 +538,12 @@ async function send<T>(method: string, path: string, body: unknown, fallback: st
   return data as T
 }
 
-async function get<T>(path: string, params: Record<string, string | undefined> = {}): Promise<T> {
+async function get<T>(path: string, params: Record<string, string | string[] | undefined> = {}): Promise<T> {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
-    if (value) search.set(key, value)
+    // 陣列＝多選，以重複的參數送出（?station=A&station=B）
+    if (Array.isArray(value)) value.forEach((v) => search.append(key, v))
+    else if (value) search.set(key, value)
   }
   const query = search.toString()
   const res = await apiFetch(`${BASE}${path}${query ? `?${query}` : ''}`)
@@ -545,9 +595,8 @@ export const api = {
     get<ComplaintSummary>('/complaints/summary', { ...p, page: String(p.page) }),
   processSummary: (p: Scope & { page: number; window?: ChangeWindow }) =>
     get<ProcessSummary>('/process/summary', { ...p, page: String(p.page) }),
-  complaints: (p: { q?: string; page: number }) =>
-    get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
-  repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
+  complaints: (f: ListFilter, page: number) => get<FilteredPaged<Complaint>>('/complaints', listParams(f, page)),
+  repairs: (f: ListFilter, page: number) => get<FilteredPaged<RepairRow>>('/repairs', listParams(f, page)),
   /** 單筆維修／客訴明細（含 8D） */
   repair: (id: number) => get<RepairRecord>(`/repairs/${id}`),
   complaint: (id: number) => get<Complaint>(`/complaints/${id}`),

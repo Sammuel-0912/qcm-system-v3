@@ -541,7 +541,14 @@ def test_complaints_list_and_summary(client):
     assert (d8["before"]["level"], d8["after"]["level"]) == (3, 1)
     assert (d8["before"]["kpiv"]["level"], d8["after"]["kpiv"]["level"]) == ("E", "A")
     assert d8["measures"]["owner"] == "劉鎮鑫" and d8["measures"]["doneAt"].startswith("2025-12-05")
-    assert client.get("/api/v1/complaints", params={"q": "螺絲"}).json()["total"] == 1
+    # 篩選（spec §17）：客訴沒有機種，第二個篩選為客戶；站別取 KPOV 對應的站別
+    assert c["station"] == "鎖銅排" and listing["options"]["groups"] == ["台南廠"]
+    assert client.get("/api/v1/complaints", params={"group": "台南廠", "station": "鎖銅排", "kpov": "K00004"}).json()["total"] == 1
+    assert client.get("/api/v1/complaints", params={"station": "鎖後蓋"}).json()["total"] == 0
+    assert client.get("/api/v1/complaints", params={"occurredFrom": "2026-05-11", "occurredTo": "2026-05-11"}).json()["total"] == 1
+    assert client.get("/api/v1/complaints", params={"occurredFrom": "2026-05-12"}).json()["total"] == 0
+    # 預計 2025/12/5、實際 2025/12/5：準時完成，不進圓餅
+    assert c["due"]["status"] == "ontime" and listing["dueStats"]["overdue"] == 0
     assert client.get(f"/api/v1/complaints/{c['id']}").json()["eightD"] == d8
     assert client.get("/api/v1/complaints/999999").status_code == 404
 
@@ -568,7 +575,8 @@ def test_process_summary_and_repairs_list(client):
     _import_v3(client)
     repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()
     assert repairs["total"] == 28
-    assert client.get("/api/v1/repairs", params={"q": "K00057"}).json()["total"] > 0
+    assert client.get("/api/v1/repairs", params={"kpov": "K00057"}).json()["total"] > 0
+    assert {"groups", "stations", "kpovs"} <= set(repairs["options"])
 
     summary = client.get("/api/v1/process/summary").json()
     assert summary["pageSize"] == 10 and len(summary["items"]) <= 10

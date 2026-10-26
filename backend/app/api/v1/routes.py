@@ -51,6 +51,15 @@ from ...services.check_monitor import (
     utc,
 )
 from ...services import presence
+from ...services.due import (
+    DUE_FILTERS,
+    due_matches,
+    due_stats,
+    due_status,
+    in_day_range,
+    parse_day,
+    site_today,
+)
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
@@ -746,13 +755,6 @@ def get_process_summary(
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
 
 
-def _matches(q: str | None, *values) -> bool:
-    if not q:
-        return True
-    needle = q.strip().lower()
-    return any(needle in str(v).lower() for v in values if v is not None)
-
-
 def _iso_utc(value: dt.datetime | None) -> str | None:
     """帶時區的 UTC ISO 字串（SQLite 讀回不帶時區）。"""
     return utc(value).isoformat() if value else None
@@ -813,38 +815,106 @@ def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
     return out
 
 
+class ListFilters:
+    """製程風險管理／客訴案件管理的清單篩選（spec §17）。
+
+    日期範圍為廠區當地日期（YYYY-MM-DD，起訖皆含）；多選以重複的查詢參數傳入（?station=A&station=B）。
+    due：planned（預計完成）、overdue（全部逾期）、lt7／d7_14／gt14（逾期天數分組）。
+    """
+
+    def __init__(
+        self,
+        occurred_from: str | None = Query(None, alias="occurredFrom"),
+        occurred_to: str | None = Query(None, alias="occurredTo"),
+        group: list[str] = Query([]),
+        station: list[str] = Query([]),
+        kpov: list[str] = Query([]),
+        improved_from: str | None = Query(None, alias="improvedFrom"),
+        improved_to: str | None = Query(None, alias="improvedTo"),
+        due: str | None = Query(None, pattern="^(" + "|".join(DUE_FILTERS) + ")$"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    ):
+        self.occurred = (parse_day(occurred_from), parse_day(occurred_to))
+        self.groups = set(group)
+        self.stations = set(station)
+        self.kpovs = set(kpov)
+        self.improved = (parse_day(improved_from), parse_day(improved_to))
+        self.due = due
+        self.page = page
+        self.page_size = page_size
+
+    def keep(self, row: dict) -> bool:
+        """除 due 以外的條件（圓餅圖依這組結果統計，再由 due 決定清單）。"""
+        return (
+            in_day_range(row["_occurred"], *self.occurred)
+            and (not self.groups or row["_group"] in self.groups)
+            and (not self.stations or row["station"] in self.stations)
+            and (not self.kpovs or row["kpovNo"] in self.kpovs)
+            and in_day_range(row["_improved"], *self.improved)
+        )
+
+
+def _filtered_listing(rows: list[dict], f: ListFilters) -> dict:
+    """rows 帶 _occurred／_group／_improved 私有欄位與 due；回傳分頁清單＋圓餅統計＋篩選選項。"""
+    kpov_labels: dict[str, str] = {}
+    for r in rows:
+        if r["kpovNo"] and r["kpovNo"] not in kpov_labels:
+            kpov_labels[r["kpovNo"]] = r.get("kpovName") or r["kpovNo"]
+    filter_options = {
+        "groups": sorted({r["_group"] for r in rows if r["_group"]}),
+        "stations": sorted({r["station"] for r in rows if r["station"]}),
+        "kpovs": [{"value": k, "label": v} for k, v in sorted(kpov_labels.items())],
+    }
+    kept = [r for r in rows if f.keep(r)]
+    stats = due_stats([r["due"] for r in kept])
+    listed = [{k: v for k, v in r.items() if not k.startswith("_")} for r in kept if due_matches(r["due"], f.due)]
+    return {**paginate(listed, f.page, f.page_size), "dueStats": stats, "options": filter_options}
+
+
 @router.get("/complaints")
 def list_complaints(
-    q: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    f: ListFilters = Depends(),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    """客訴清單（後端分頁、關鍵字搜尋），新到舊。"""
+    """客訴清單（後端分頁），新到舊。篩選：日期、客戶、站別、KPOV、改善時間、完成期限（spec §17）。
+
+    客訴報表沒有機種欄位，第二個篩選用客戶；站別取 KPOV 對應的站別，對不到時用製程單元。
+    """
     batch = scope.batch
+    states = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in build_states(session, batch.id)}
     complaints = session.scalars(
         select(FactComplaint)
         .where(FactComplaint.batch_id == batch.id)
         .order_by(FactComplaint.complained_at.desc(), FactComplaint.seq.desc())
     ).all()
-    rows = [
-        _complaint_out(c, full=True)
-        for c in complaints
-        if _matches(q, c.report_no, c.customer, c.category, c.item, c.process_unit, c.product_kpov, c.owner, c.kpov_no)
-    ]
-    return paginate(rows, page, page_size)
+    today = site_today()
+    rows = []
+    for c in complaints:
+        state = states.get((c.kpov_no, c.equipment_code))
+        rows.append(
+            {
+                **_complaint_out(c, full=True),
+                "station": state.kpov.station if state else c.process_unit,
+                "kpovName": state.kpov.kpov_name if state else c.product_kpov,
+                "due": due_status(c.planned_at, c.done_at, today),
+                "_occurred": c.complained_at,
+                "_group": c.customer,
+                "_improved": c.improvement_effective_at,
+            }
+        )
+    return _filtered_listing(rows, f)
 
 
 @router.get("/repairs")
 def list_repairs(
-    q: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    f: ListFilters = Depends(),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    """製程清單：修護報表（後端分頁、關鍵字搜尋），依測試時間新到舊。"""
+    """製程清單：修護報表（後端分頁），依測試時間新到舊。
+    篩選：測試時間、機種、站別、KPOV、改善時間、完成期限（spec §17）。"""
     batch = scope.batch
     states = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in build_states(session, batch.id)}
     repairs = session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)).all()
@@ -857,14 +927,12 @@ def list_repairs(
 
     repairs = sorted(repairs, key=lambda r: utc(r.tested_at) or epoch, reverse=True)
     now = dt.datetime.now(dt.timezone.utc)
+    today = site_today(now)
     rows = []
     for r in repairs:
         state = states.get((r.kpov_no, r.equipment_code))
         name = state.kpov.kpov_name if state else None
         station = r.station or (state.kpov.station if state else None)
-        if not _matches(q, r.serial_no, r.product_model, r.line, station, r.equipment_code, r.kpov_no, name,
-                        r.product_defect_desc, r.improvement):
-            continue
         improve_at = utc(r.improvement_effective_at)
         rows.append(
             {
@@ -885,9 +953,14 @@ def list_repairs(
                 "improvePlanned": bool(improve_at and improve_at > now),
                 "levelBefore": state.level_baseline if state else None,
                 "levelAfter": state.level_current if state else None,
+                # 8D 預計完成 vs 實際完成
+                "due": due_status(r.d8_planned_at, r.d8_done_at, today),
+                "_occurred": r.tested_at,
+                "_group": r.product_model,
+                "_improved": r.improvement_effective_at,
             }
         )
-    return paginate(rows, page, page_size)
+    return _filtered_listing(rows, f)
 
 
 @router.get("/repairs/{repair_id}")

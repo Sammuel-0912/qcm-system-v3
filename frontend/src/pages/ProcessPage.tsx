@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { api, type Paged, type RepairRow } from '../api/client'
+import { api, type FilteredPaged, type ListFilter, type RepairRow } from '../api/client'
 import { AppShell } from '../components/AppShell'
+import { DuePie, EMPTY_FILTER, ListFilterBar, OverdueBadge } from '../components/DueTracking'
 import { LevelChange } from '../components/LevelChip'
-import { Pager, SearchBox } from '../components/ListToolbar'
+import { Pager } from '../components/ListToolbar'
 import { RecordDetailDrawer, type RecordTarget } from '../components/RecordDetailDrawer'
 import { formatLocalDateTime } from '../utils/datetime'
 
@@ -12,33 +13,37 @@ function stamp(value: string | null) {
   return value ? formatLocalDateTime(value).slice(0, 16) : '—'
 }
 
-/** 製程風險管理：修護報表的維修紀錄；點列開 8D 明細／等級歷程 */
+/**
+ * 製程風險管理：修護報表的維修紀錄；點列開 8D 明細／等級歷程。
+ * 上方為預計完成／逾期圓餅與篩選（測試時間、機種、站別、KPOV、改善時間、完成期限，spec §17）。
+ */
 export default function ProcessPage() {
-  const [q, setQ] = useState('')
+  const [filter, setFilter] = useState<ListFilter>(EMPTY_FILTER)
   const [page, setPage] = useState(1)
-  const [data, setData] = useState<Paged<RepairRow> | null>(null)
+  const [data, setData] = useState<FilteredPaged<RepairRow> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordTarget | null>(null)
 
   useEffect(() => {
     api
-      .repairs({ q: q || undefined, page })
+      .repairs(filter, page)
       .then((d) => {
         setData(d)
         setError(null)
       })
       .catch((err) => setError(err instanceof Error ? err.message : '載入失敗'))
-  }, [q, page])
+  }, [filter, page])
 
-  const onSearch = useCallback((value: string) => {
-    setQ(value)
+  const changeFilter = (next: ListFilter) => {
+    setFilter(next)
     setPage(1)
-  }, [])
+  }
 
   return (
     <AppShell title="製程風險管理">
       <main className="mx-auto max-w-7xl space-y-4 px-6 py-6">
-        <SearchBox onSearch={onSearch} placeholder="搜尋序號、機種、站別、設備ID、KPOV、不良描述…" />
+        {data && <DuePie stats={data.dueStats} selected={filter.due} onSelect={(due) => changeFilter({ ...filter, due })} />}
+        <ListFilterBar value={filter} onChange={changeFilter} options={data?.options} occurredLabel="測試時間" groupLabel="機種" />
         {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -87,6 +92,7 @@ export default function ProcessPage() {
                         預計改善
                       </span>
                     )}
+                    <OverdueBadge due={r.due} />
                   </td>
                   <td className="px-3 py-2">
                     <LevelChange before={r.levelBefore} after={r.levelAfter} />
