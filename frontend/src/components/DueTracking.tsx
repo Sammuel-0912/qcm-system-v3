@@ -13,7 +13,7 @@ export const EMPTY_FILTER: ListFilter = {
 }
 
 // 圓餅的四塊：未到期用藍、逾期依天數由淺到深的紅
-const SLICES: { key: Exclude<DueKey, 'overdue'>; label: string; color: string }[] = [
+const SLICES: { key: Exclude<DueKey, 'overdue' | 'ontime'>; label: string; color: string }[] = [
   { key: 'planned', label: '預計完成（未到期）', color: '#38bdf8' },
   { key: 'lt7', label: '逾期 7 天內', color: '#fca5a5' },
   { key: 'd7_14', label: '逾期 7–14 天', color: '#f87171' },
@@ -22,6 +22,7 @@ const SLICES: { key: Exclude<DueKey, 'overdue'>; label: string; color: string }[
 
 export const DUE_LABELS: Record<DueKey, string> = {
   planned: '預計完成（未到期）',
+  ontime: '已完成（準時）',
   overdue: '全部逾期',
   lt7: '逾期 7 天內',
   d7_14: '逾期 7–14 天',
@@ -225,9 +226,21 @@ export function ListFilterBar({
   )
 }
 
-/** 逾期標記（紅色）：逾期 N 天，下方註明 8D 預計／實際完成 */
-export function OverdueBadge({ due }: { due: Due | null | undefined }) {
-  if (!due || due.status !== 'overdue') return null
+/**
+ * 完成期限標記：逾期為紅色「逾期 N 天」；準時完成為綠色「已完成」；下方註明 8D 預計／實際完成。
+ * 未到期（預計完成）不另加標記。
+ */
+export function DueBadge({ due }: { due: Due | null | undefined }) {
+  if (!due) return null
+  if (due.status === 'ontime') {
+    return (
+      <span className="mt-0.5 block" title={`8D 預計完成 ${due.plannedAt}・實際完成 ${due.doneAt}`}>
+        <span className="block w-fit rounded bg-emerald-600 px-1 text-[10px] font-medium text-white">已完成</span>
+        <span className="block text-[10px] text-emerald-700">實際 {due.doneAt}</span>
+      </span>
+    )
+  }
+  if (due.status !== 'overdue') return null
   return (
     <span className="mt-0.5 block" title={`8D 預計完成 ${due.plannedAt}・實際完成 ${due.doneAt ?? '未完成'}`}>
       <span className="block w-fit rounded bg-red-600 px-1 text-[10px] font-medium text-white">逾期 {due.overdueDays} 天</span>

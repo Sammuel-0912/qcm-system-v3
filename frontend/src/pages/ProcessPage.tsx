@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { api, type FilteredPaged, type ListFilter, type RepairRow } from '../api/client'
 import { AppShell } from '../components/AppShell'
-import { DuePie, EMPTY_FILTER, ListFilterBar, OverdueBadge } from '../components/DueTracking'
+import { DuePie, EMPTY_FILTER, ListFilterBar, DueBadge } from '../components/DueTracking'
 import { LevelChange } from '../components/LevelChip'
 import { Pager } from '../components/ListToolbar'
 import { RecordDetailDrawer, type RecordTarget } from '../components/RecordDetailDrawer'
@@ -92,7 +92,7 @@ export default function ProcessPage() {
                         預計改善
                       </span>
                     )}
-                    <OverdueBadge due={r.due} />
+                    <DueBadge due={r.due} />
                   </td>
                   <td className="px-3 py-2">
                     <LevelChange before={r.levelBefore} after={r.levelAfter} />

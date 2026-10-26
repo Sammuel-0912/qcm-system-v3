@@ -140,7 +140,7 @@ export type LevelChangesResponse = {
 export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
 
 /** 完成期限（spec §17）：8D 預計完成 vs 實際完成 */
-export type DueKey = 'planned' | 'overdue' | 'lt7' | 'd7_14' | 'gt14'
+export type DueKey = 'planned' | 'ontime' | 'overdue' | 'lt7' | 'd7_14' | 'gt14'
 export type Due = {
   status: 'planned' | 'ontime' | 'overdue'
   overdueDays: number
@@ -148,7 +148,7 @@ export type Due = {
   plannedAt: string
   doneAt: string | null
 }
-export type DueStats = Record<DueKey, number>
+export type DueStats = Record<Exclude<DueKey, 'ontime'>, number>
 
 /** 製程風險管理／客訴案件管理的篩選（日期為 YYYY-MM-DD，起訖皆含） */
 export type ListFilter = {

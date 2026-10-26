@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { api, type Complaint, type FilteredPaged, type ListFilter } from '../api/client'
 import { AppShell } from '../components/AppShell'
-import { DuePie, EMPTY_FILTER, ListFilterBar, OverdueBadge } from '../components/DueTracking'
+import { DuePie, EMPTY_FILTER, ListFilterBar, DueBadge } from '../components/DueTracking'
 import { LevelChange } from '../components/LevelChip'
 import { Pager } from '../components/ListToolbar'
 import { RecordDetailDrawer, type RecordTarget } from '../components/RecordDetailDrawer'
@@ -100,7 +100,7 @@ export default function ComplaintsPage() {
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 tabular-nums">
                       {c.doneAt ? day(c.doneAt) : <span className="text-amber-600">未完成</span>}
-                      <OverdueBadge due={c.due} />
+                      <DueBadge due={c.due} />
                     </td>
                     <td className="px-3 py-2">{c.effectiveness}</td>
                   </tr>

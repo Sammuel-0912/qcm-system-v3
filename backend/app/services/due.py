@@ -21,7 +21,7 @@ DUE_OVERDUE = "overdue"
 BUCKET_LT7 = "lt7"
 BUCKET_7_14 = "d7_14"
 BUCKET_GT14 = "gt14"
-DUE_FILTERS = (DUE_PLANNED, DUE_OVERDUE, BUCKET_LT7, BUCKET_7_14, BUCKET_GT14)
+DUE_FILTERS = (DUE_PLANNED, DUE_ONTIME, DUE_OVERDUE, BUCKET_LT7, BUCKET_7_14, BUCKET_GT14)
 
 
 def site_date(value: dt.datetime | None) -> dt.date | None:
@@ -70,7 +70,7 @@ def due_matches(due: dict | None, wanted: str | None) -> bool:
         return True
     if due is None:
         return False
-    if wanted in (DUE_PLANNED, DUE_OVERDUE):
+    if wanted in (DUE_PLANNED, DUE_ONTIME, DUE_OVERDUE):
         return due["status"] == wanted
     return due["bucket"] == wanted
 

@@ -69,6 +69,10 @@ def test_repairs_filters_and_due_pie(app_ctx):
         res = su.get("/api/v1/repairs", params={"pageSize": 50, "due": key}).json()
         assert res["total"] == stats[key] and res["dueStats"] == stats
     assert su.get("/api/v1/repairs", params={"due": "bad"}).status_code == 422
+    # 已完成（準時）：不進圓餅，但可篩選
+    ontime = su.get("/api/v1/repairs", params={"pageSize": 50, "due": "ontime"}).json()
+    assert ontime["total"] == sum(1 for r in rows if r["due"] and r["due"]["status"] == "ontime") == 21
+    assert ontime["total"] + stats["overdue"] + stats["planned"] == 30
 
     # 機種、站別、KPOV 多選（重複參數）
     model = "3915102662"
