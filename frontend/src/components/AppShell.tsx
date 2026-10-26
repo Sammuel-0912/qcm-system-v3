@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
+import { useAuth } from '../auth/AuthContext'
 import { AR_MARKER_ENABLED } from '../features'
 import { usePresence } from '../hooks/usePresence'
+import { DatasetSelect, UserMenu } from './SessionControls'
 
 type NavItem = { to: string; label: string; hint?: string }
 /** title 為空：第一層直接列項目；有 title：顯示為第一層標題，items 縮排成第二層 */
@@ -29,6 +31,13 @@ const NAV: NavGroup[] = [
   },
 ]
 
+// 管理者才看得到（spec §15）
+const ADMIN_NAV: NavGroup = {
+  title: '系統管理',
+  hint: 'Administration',
+  items: [{ to: '/admin/users', label: '使用者管理', hint: 'Users & Roles' }],
+}
+
 function isActive(pathname: string, to: string) {
   return pathname === to || pathname.startsWith(to + '/')
 }
@@ -52,9 +61,11 @@ function NavLinkItem({ item, active }: { item: NavItem; active: boolean }) {
 
 function SideNav() {
   const { pathname } = useLocation()
+  const { isAdmin } = useAuth()
+  const groups = isAdmin ? [...NAV, ADMIN_NAV] : NAV
   return (
     <nav aria-label="主要導覽" className="space-y-4 px-3 py-4">
-      {NAV.map((group, gi) => (
+      {groups.map((group, gi) => (
         <div key={group.title ?? gi}>
           {group.title && (
             <div className="px-2.5 pb-1.5">
@@ -203,6 +214,7 @@ export function AppShell({ title, actions, children }: Props) {
               ☰
             </button>
             <h1 className="text-xl font-semibold">{title}</h1>
+            <DatasetSelect />
             <div className="ml-auto flex items-center gap-4">
               {online !== null && (
                 <span className="flex items-center gap-1.5 text-sm text-slate-500" title="目前開著本網站的分頁數">
@@ -211,6 +223,7 @@ export function AppShell({ title, actions, children }: Props) {
                 </span>
               )}
               {actions && <div className="flex items-center gap-2">{actions}</div>}
+              <UserMenu />
             </div>
           </div>
         </header>

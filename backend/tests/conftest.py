@@ -14,3 +14,9 @@ import tempfile
 _TMP = pathlib.Path(tempfile.mkdtemp(prefix="qcm-test-"))
 os.environ["QCM_DATABASE_URL"] = f"sqlite:///{_TMP / 'test.db'}"
 os.environ["QCM_DATA_DIR"] = str(_TMP)
+
+# RBAC（spec §15）：測試用的最高權限管理者與固定 JWT 金鑰，啟動時由 ensure_bootstrap_admin 建立
+os.environ.setdefault("QCM_JWT_SECRET", "test-secret-not-for-production")
+os.environ["QCM_ADMIN_USERNAME"] = "admin"
+os.environ["QCM_ADMIN_PASSWORD"] = "admin-pass-1234"
+ADMIN = ("admin", "admin-pass-1234")

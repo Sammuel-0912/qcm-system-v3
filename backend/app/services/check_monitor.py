@@ -139,7 +139,9 @@ def monitor_rows(
     session: Session,
     items: list[FactCheckItem],
     now: dt.datetime | None = None,
+    dataset: str | None = None,
 ) -> list[dict]:
+    """dataset 給定時只採計該資料集（一條線）的拍照點檢：不同廠可能有相同的設備代碼。"""
     now = utc(now or dt.datetime.now(dt.timezone.utc))
     codes = {i.equipment_code for i in items if i.equipment_code}
     history: dict[tuple, list[Record]] = {}
@@ -150,7 +152,12 @@ def monitor_rows(
                     ArInspection.equipment_code.in_(codes), ArInspection.check_content.is_not(None)
                 )
             ),
-            *session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.equipment_code.in_(codes))),
+            *session.scalars(
+                select(CheckPhotoInspection).where(
+                    CheckPhotoInspection.equipment_code.in_(codes),
+                    *([CheckPhotoInspection.dataset == dataset] if dataset is not None else []),
+                )
+            ),
         ]
         records.sort(key=lambda r: utc(r.inspected_at), reverse=True)
         for record in records:

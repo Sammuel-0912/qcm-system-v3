@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { api, type PhotoInspection, type PhotoInspectionStat } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import { AppShell } from '../components/AppShell'
+import { CheckTrendPanel } from '../components/CheckTrendPanel'
+import { CountImportDialog } from '../components/CountImportDialog'
 import { KpivLevelBadge } from '../components/KpivLevelBadge'
 import { formatLocalDateTime, localInputToIso } from '../utils/datetime'
 
@@ -121,6 +124,10 @@ export default function ArDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<PhotoInspection | null>(null)
+  // 「重新整理」時一併更新上方的趨勢與分布
+  const [reloadKey, setReloadKey] = useState(0)
+  const { isSuper } = useAuth()
+  const [importing, setImporting] = useState(false)
 
   const [equipmentCode, setEquipmentCode] = useState('')
   const [start, setStart] = useState('')
@@ -156,6 +163,15 @@ export default function ArDashboardPage() {
 
   const actions = (
     <>
+      {isSuper && (
+        <button
+          onClick={() => setImporting(true)}
+          title="重新部署後補回站別卡片的正常／異常次數（只累加卡片，不會出現在點檢紀錄）"
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          匯入歷史點檢數量
+        </button>
+      )}
       <Link
         to="/ar/photo"
         className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
@@ -175,7 +191,10 @@ export default function ArDashboardPage() {
         匯出紀錄（含照片）
       </a>
       <button
-        onClick={() => void load()}
+        onClick={() => {
+          setReloadKey((k) => k + 1)
+          void load()
+        }}
         className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
       >
         重新整理
@@ -191,6 +210,8 @@ export default function ArDashboardPage() {
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
         )}
+
+        <CheckTrendPanel reloadKey={reloadKey} />
 
         <section>
           <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">站別良率總覽</h2>
@@ -218,6 +239,7 @@ export default function ArDashboardPage() {
                     <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700">正常 {s.okCount}</span>
                     <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">異常 {s.warnCount}</span>
                     <span className="text-slate-500">共 {s.total} 次</span>
+                    {s.importedCount > 0 && <span className="text-slate-400">（含匯入 {s.importedCount} 次）</span>}
                   </div>
                 </div>
               ))}
@@ -321,6 +343,14 @@ export default function ArDashboardPage() {
       </main>
 
       {viewing && <PhotoViewer record={viewing} onClose={() => setViewing(null)} />}
+      {importing && (
+        <CountImportDialog
+          onClose={() => {
+            setImporting(false)
+            void load()
+          }}
+        />
+      )}
     </AppShell>
   )
 }

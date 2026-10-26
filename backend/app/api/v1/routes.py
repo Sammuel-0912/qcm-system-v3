@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import os
 import shutil
 import tempfile
 import uuid
@@ -18,8 +19,11 @@ from ...config import SITE_UTC_OFFSET_HOURS
 from ...services.storage import get_storage, key_from_url
 from ...services.storage import url_for as storage_url_for
 from ...db import get_session
+from ..deps import Scope, current_scope, current_user, require_admin, require_super
+from ...services.auth import can_import, can_view_plant, parse_dataset_filename
 from ...importer.excel import ImportError_, import_workbook
 from ...models import (
+    CheckCountImport,
     CheckPhotoInspection,
     DimEquipment,
     FactChangeRecord,
@@ -28,14 +32,37 @@ from ...models import (
     FactLevelEvent,
     FactRepair,
     ImportBatch,
+    User,
 )
 from ...services.measure_rows import events_by_repair, repair_row
 from ...importer.mapping import REPAIR_EIGHT_D_PREFIX as M_REPAIR_PREFIX
 from ...services.eight_d import eight_d_out
 from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
-from ...services.check_monitor import check_items, item_key, monitor_rows, shift_of, shift_payload, summarize_rows, utc
+from ...services.check_monitor import (
+    EXPORT_SHIFT_NAMES,
+    SLOT_OK,
+    SLOT_WARN,
+    check_items,
+    item_key,
+    monitor_rows,
+    shift_of,
+    shift_payload,
+    summarize_rows,
+    utc,
+)
 from ...services import presence
+from ...services.check_trend import check_trend
+from ...services.count_import import CountImportError, parse_count_workbook
+from ...services.due import (
+    DUE_FILTERS,
+    due_matches,
+    due_stats,
+    due_status,
+    in_day_range,
+    parse_day,
+    site_today,
+)
 from ...services.level import LEVEL_COLORS, LEVEL_DESCRIPTIONS
 from ...services.lifecycle import VIEWS, build_states
 from ...services.query import (
@@ -47,14 +74,8 @@ from ...services.query import (
     window_bounds,
 )
 
-router = APIRouter(prefix="/api/v1")
-
-
-def _batch_or_404(session: Session) -> ImportBatch:
-    batch = active_batch(session)
-    if batch is None:
-        raise HTTPException(status_code=404, detail="尚無資料，請先匯入 Excel")
-    return batch
+# 除了登入（auth_routes）以外，所有 /api/v1 都要先登入（spec §15）
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(current_user)])
 
 
 def _check_view(view: str) -> str:
@@ -67,13 +88,19 @@ def _batch_info(batch: ImportBatch) -> dict:
     return {
         "id": batch.id,
         "filename": batch.filename,
-        "importedAt": batch.imported_at.isoformat() if batch.imported_at else None,
+        "importedAt": _iso_utc(batch.imported_at),
+        "dataset": batch.dataset,
+        "plant": batch.plant,
+        "factory": batch.factory,
+        "line": batch.line_code,
+        "importedBy": batch.imported_by,
     }
 
 
 @router.get("/filters")
-def get_filters(session: Session = Depends(get_session)):
-    batch = _batch_or_404(session)
+def get_filters(scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
+    batch = scope.batch
     states = build_states(session, batch.id)
 
     # 站別不再唯一（「鎖銅排」同時是 CTP 站與 OP 站），因此以 屬性1+站別 為鍵
@@ -126,11 +153,12 @@ def get_quadrant(
     attribute: str | None = None,
     target: str | None = None,
     window: str | None = Query(None, pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """象限圖。母體一律為全部 KPOV；給 window 時另回 start＝期間第一天當時的 Level 分佈（期初 → 現在）。"""
     _check_view(view)
-    batch = _batch_or_404(session)
+    batch = scope.batch
     states = build_states(session, batch.id)
     bounds = window_bounds(window)
     start_states = build_states(session, batch.id, as_of=bounds[0]) if bounds else None
@@ -148,9 +176,10 @@ def get_trend(
     attribute: str | None = None,
     target: str | None = None,
     granularity: str = Query("month", pattern="^(month|week)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    batch = _batch_or_404(session)
+    batch = scope.batch
     states = build_states(session, batch.id)
     return trend_payload(session, batch.id, states, station, line, attribute, target, granularity)
 
@@ -167,10 +196,11 @@ def list_kpov(
     page: int = 1,
     page_size: int = Query(100, alias="pageSize", le=500),
     window: str | None = Query(None, pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     _check_view(view)
-    batch = _batch_or_404(session)
+    batch = scope.batch
     # 與象限圖同一個母體（全部 KPOV）；window 已不影響明細，保留參數只為相容舊連結
     states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
@@ -219,8 +249,9 @@ def list_kpov(
 
 
 @router.get("/kpov/{kpov_no}/{equipment_code}/history")
-def kpov_history(kpov_no: str, equipment_code: str, session: Session = Depends(get_session)):
-    batch = _batch_or_404(session)
+def kpov_history(kpov_no: str, equipment_code: str, scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
+    batch = scope.batch
     states = build_states(session, batch.id)
     match = next(
         (s for s in states if s.kpov.kpov_no == kpov_no and s.kpov.equipment_code == equipment_code), None
@@ -346,16 +377,17 @@ def get_check_monitor(
     line: str | None = None,
     attribute: str | None = None,
     target: str | None = None,
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """Level 3 高風險項點檢監控：點檢項目 × AR 逐項點檢最新結果。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     codes: set[str] | None = None
     if station or line or attribute or target:
         states = build_states(session, batch.id)
         scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
         codes = {s.kpov.equipment_code for s in scoped if s.kpov.equipment_code}
-    rows = monitor_rows(session, check_items(session, batch.id, codes))
+    rows = monitor_rows(session, check_items(session, batch.id, codes), dataset=scope.dataset)
     rows.sort(key=lambda r: (r["station"] or "", r["kpovNo"] or "", r["checkContent"] or ""))
     return {"items": rows, "summary": summarize_rows(rows), "shift": shift_payload()}
 
@@ -369,9 +401,10 @@ def list_events(
     transition: str | None = None,
     level_after: int | None = Query(None, alias="levelAfter", ge=0, le=3),
     limit: int = Query(50, le=500),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    batch = _batch_or_404(session)
+    batch = scope.batch
     states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code) for s in scoped}
@@ -442,6 +475,7 @@ def list_level_changes(
     kind: str = Query("escalated", pattern="^(escalated|improved)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """等級異動總覽：近 1／7／30／365 天內發生的惡化或改善，後端分頁。
@@ -449,7 +483,7 @@ def list_level_changes(
     惡化以不良發生（測試）時間落在區間內為準；改善以改善時間落在區間內為準。
     尚未到的預計改善不算「已改善」。兩個卡片的數字（escalated / improved）同樣依區間計算。
     """
-    batch = _batch_or_404(session)
+    batch = scope.batch
     states = build_states(session, batch.id)
     scoped, _ = apply_filters(session, batch.id, states, station, line, attribute, target)
     allowed = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in scoped}
@@ -521,12 +555,85 @@ def list_level_changes(
     }
 
 
+# --------------------------------------------------------------------------- 總覽廣播
+
+
+@router.get("/broadcast")
+def get_broadcast(
+    window: str = Query("month", pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """總覽頁頂端的廣播（spec §16）。一律看整條線、不吃篩選器：
+
+    - level3：Level 3 個數，期初（期間第一天）→ 現在，與象限圖同一套算法
+    - inspection：當班（白班／夜班）的點檢次數：已點檢／應點檢、其中異常
+    - escalations：期間內等級提升的站別（ESCALATED 事件，依不良發生時間）
+    """
+    batch = scope.batch
+    now = dt.datetime.now(dt.timezone.utc)
+    since, _ = window_bounds(window)
+    states = build_states(session, batch.id)
+    start_states = build_states(session, batch.id, as_of=since)
+    level3_now = sum(1 for s in states if s.level_for("current") == 3)
+    level3_start = sum(1 for s in start_states if s.level_for("current") == 3)
+
+    rows = monitor_rows(session, check_items(session, batch.id), now=now, dataset=scope.dataset)
+    slots = [slot for row in rows for slot in row["slots"]]
+    shift = shift_payload(now)
+
+    kpovs = {(s.kpov.kpov_no, s.kpov.equipment_code): s.kpov for s in states}
+    events = session.scalars(
+        select(FactLevelEvent)
+        .where(FactLevelEvent.batch_id == batch.id, FactLevelEvent.transition == CHANGE_KINDS_UI["escalated"])
+        .order_by(FactLevelEvent.effective_at.desc(), FactLevelEvent.id.desc())
+    ).all()
+    escalations = []
+    for e in events:
+        at = utc(e.effective_at)
+        kpov = kpovs.get((e.kpov_no, e.equipment_code))
+        if kpov is None or not since <= at <= now:
+            continue
+        escalations.append(
+            {
+                "station": kpov.station,
+                "kpovNo": e.kpov_no,
+                "kpovName": kpov.kpov_name,
+                "equipmentCode": e.equipment_code,
+                "levelBefore": e.level_before,
+                "levelAfter": e.level_after,
+                "at": at.isoformat(),
+            }
+        )
+
+    return {
+        "window": window,
+        "since": since.isoformat(),
+        "level3": {"start": level3_start, "now": level3_now, "delta": level3_now - level3_start},
+        "inspection": {
+            # 使用者慣稱白班／夜班（與點檢紀錄匯出相同）
+            "shift": {
+                **shift,
+                "name": EXPORT_SHIFT_NAMES.get(shift["name"], shift["name"]),
+                "label": shift["label"].replace(shift["name"], EXPORT_SHIFT_NAMES.get(shift["name"], shift["name"]), 1),
+            },
+            "items": len(rows),
+            "expected": len(slots),
+            "completed": sum(1 for slot in slots if slot["state"] in (SLOT_OK, SLOT_WARN)),
+            "warn": sum(1 for slot in slots if slot["state"] == SLOT_WARN),
+        },
+        "escalations": escalations,
+        "escalatedStations": sorted({x["station"] for x in escalations}),
+    }
+
+
 # --------------------------------------------------------------------------- 站別風險地圖
 
 
 @router.get("/station-risk")
 def get_station_risk(
     window: str = Query("month", pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """站別風險地圖：近 1／7／30／365 天內各設備的維修與客訴筆數，以及期間內最嚴重的 Level。
@@ -535,7 +642,7 @@ def get_station_risk(
     維修＝該筆的惡化事件後 Level；客訴＝改善前 Level。前端依 worstLevel 上卡片底色。
     客訴未填設備ID 者無法歸到任何站，另計 unmappedComplaints。不套用上方篩選：地圖本身就是全線一覽。
     """
-    batch = _batch_or_404(session)
+    batch = scope.batch
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(days=CHANGE_WINDOWS[window])
 
@@ -576,9 +683,10 @@ def get_station_risk(
 
 
 @router.get("/station-levels/kpov")
-def get_station_kpov_levels(session: Session = Depends(get_session)):
+def get_station_kpov_levels(scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
     """站別柱狀圖（layout 下方）：各站 KPOV 個數，依 KPOV 數據庫原始 Level。全線一覽，不套用篩選與期間。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     return kpov_levels(session, batch.id)
 
 
@@ -588,10 +696,11 @@ def get_station_event_levels(
     station: str | None = None,
     line: str | None = None,
     attribute: str | None = None,
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """客訴／製程柱狀圖：期間內各站的客訴與維修筆數，依發生當時的 Level 分色；套用上方篩選。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     scoped, _ = apply_filters(session, batch.id, build_states(session, batch.id), station, line, attribute)
     return event_levels(session, batch.id, window, scoped)
 
@@ -615,13 +724,14 @@ def get_complaint_summary(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
     window: str | None = Query(None, pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """首頁：Level 3–0 客訴筆數（改善前／改善後）與客訴問題追蹤表（後端分頁）。
 
     有篩選（站別／線別／屬性／Layout 選取）時，只計入有對應到範圍內 KPOV 的客訴。
     """
-    batch = _batch_or_404(session)
+    batch = scope.batch
     states, scoped, filtered = _scope(session, batch.id, station, line, attribute, target)
     counts, rows = complaint_summary(
         session, batch.id, states, scoped if filtered else None, window_bounds(window)
@@ -638,20 +748,14 @@ def get_process_summary(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, alias="pageSize", ge=1, le=50),
     window: str | None = Query(None, pattern="^(day|week|month|year)$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """首頁：製程問題追蹤（修護報表）— Level 3–0 維修筆數與追蹤表（後端分頁）。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     _, scoped, _ = _scope(session, batch.id, station, line, attribute, target)
     counts, rows = process_summary(session, batch.id, scoped, window_bounds(window))
     return {"levelCounts": counts, **paginate(rows, page, page_size)}
-
-
-def _matches(q: str | None, *values) -> bool:
-    if not q:
-        return True
-    needle = q.strip().lower()
-    return any(needle in str(v).lower() for v in values if v is not None)
 
 
 def _iso_utc(value: dt.datetime | None) -> str | None:
@@ -714,37 +818,107 @@ def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
     return out
 
 
+class ListFilters:
+    """製程風險管理／客訴案件管理的清單篩選（spec §17）。
+
+    日期範圍為廠區當地日期（YYYY-MM-DD，起訖皆含）；多選以重複的查詢參數傳入（?station=A&station=B）。
+    due：planned（預計完成）、overdue（全部逾期）、lt7／d7_14／gt14（逾期天數分組）。
+    """
+
+    def __init__(
+        self,
+        occurred_from: str | None = Query(None, alias="occurredFrom"),
+        occurred_to: str | None = Query(None, alias="occurredTo"),
+        group: list[str] = Query([]),
+        station: list[str] = Query([]),
+        kpov: list[str] = Query([]),
+        improved_from: str | None = Query(None, alias="improvedFrom"),
+        improved_to: str | None = Query(None, alias="improvedTo"),
+        due: str | None = Query(None, pattern="^(" + "|".join(DUE_FILTERS) + ")$"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    ):
+        self.occurred = (parse_day(occurred_from), parse_day(occurred_to))
+        self.groups = set(group)
+        self.stations = set(station)
+        self.kpovs = set(kpov)
+        self.improved = (parse_day(improved_from), parse_day(improved_to))
+        self.due = due
+        self.page = page
+        self.page_size = page_size
+
+    def keep(self, row: dict) -> bool:
+        """除 due 以外的條件（圓餅圖依這組結果統計，再由 due 決定清單）。"""
+        return (
+            in_day_range(row["_occurred"], *self.occurred)
+            and (not self.groups or row["_group"] in self.groups)
+            and (not self.stations or row["station"] in self.stations)
+            and (not self.kpovs or row["kpovNo"] in self.kpovs)
+            and in_day_range(row["_improved"], *self.improved)
+        )
+
+
+def _filtered_listing(rows: list[dict], f: ListFilters) -> dict:
+    """rows 帶 _occurred／_group／_improved 私有欄位與 due；回傳分頁清單＋圓餅統計＋篩選選項。"""
+    kpov_labels: dict[str, str] = {}
+    for r in rows:
+        if r["kpovNo"] and r["kpovNo"] not in kpov_labels:
+            kpov_labels[r["kpovNo"]] = r.get("kpovName") or r["kpovNo"]
+    filter_options = {
+        "groups": sorted({r["_group"] for r in rows if r["_group"]}),
+        "stations": sorted({r["station"] for r in rows if r["station"]}),
+        "kpovs": [{"value": k, "label": v} for k, v in sorted(kpov_labels.items())],
+    }
+    kept = [r for r in rows if f.keep(r)]
+    stats = due_stats([r["due"] for r in kept])
+    listed = [{k: v for k, v in r.items() if not k.startswith("_")} for r in kept if due_matches(r["due"], f.due)]
+    return {**paginate(listed, f.page, f.page_size), "dueStats": stats, "options": filter_options}
+
+
 @router.get("/complaints")
 def list_complaints(
-    q: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    f: ListFilters = Depends(),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    """客訴清單（後端分頁、關鍵字搜尋），新到舊。"""
-    batch = _batch_or_404(session)
+    """客訴清單（後端分頁），新到舊。篩選：日期、客戶、站別、KPOV、改善時間、完成期限（spec §17）。
+
+    客訴報表沒有機種欄位，第二個篩選用客戶；站別取 KPOV 對應的站別，對不到時用製程單元。
+    """
+    batch = scope.batch
+    states = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in build_states(session, batch.id)}
     complaints = session.scalars(
         select(FactComplaint)
         .where(FactComplaint.batch_id == batch.id)
         .order_by(FactComplaint.complained_at.desc(), FactComplaint.seq.desc())
     ).all()
-    rows = [
-        _complaint_out(c, full=True)
-        for c in complaints
-        if _matches(q, c.report_no, c.customer, c.category, c.item, c.process_unit, c.product_kpov, c.owner, c.kpov_no)
-    ]
-    return paginate(rows, page, page_size)
+    today = site_today()
+    rows = []
+    for c in complaints:
+        state = states.get((c.kpov_no, c.equipment_code))
+        rows.append(
+            {
+                **_complaint_out(c, full=True),
+                "station": state.kpov.station if state else c.process_unit,
+                "kpovName": state.kpov.kpov_name if state else c.product_kpov,
+                "due": due_status(c.planned_at, c.done_at, today),
+                "_occurred": c.complained_at,
+                "_group": c.customer,
+                "_improved": c.improvement_effective_at,
+            }
+        )
+    return _filtered_listing(rows, f)
 
 
 @router.get("/repairs")
 def list_repairs(
-    q: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, alias="pageSize", ge=1, le=50),
+    f: ListFilters = Depends(),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
-    """製程清單：修護報表（後端分頁、關鍵字搜尋），依測試時間新到舊。"""
-    batch = _batch_or_404(session)
+    """製程清單：修護報表（後端分頁），依測試時間新到舊。
+    篩選：測試時間、機種、站別、KPOV、改善時間、完成期限（spec §17）。"""
+    batch = scope.batch
     states = {(s.kpov.kpov_no, s.kpov.equipment_code): s for s in build_states(session, batch.id)}
     repairs = session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id)).all()
     epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
@@ -756,14 +930,12 @@ def list_repairs(
 
     repairs = sorted(repairs, key=lambda r: utc(r.tested_at) or epoch, reverse=True)
     now = dt.datetime.now(dt.timezone.utc)
+    today = site_today(now)
     rows = []
     for r in repairs:
         state = states.get((r.kpov_no, r.equipment_code))
         name = state.kpov.kpov_name if state else None
         station = r.station or (state.kpov.station if state else None)
-        if not _matches(q, r.serial_no, r.product_model, r.line, station, r.equipment_code, r.kpov_no, name,
-                        r.product_defect_desc, r.improvement):
-            continue
         improve_at = utc(r.improvement_effective_at)
         rows.append(
             {
@@ -784,15 +956,21 @@ def list_repairs(
                 "improvePlanned": bool(improve_at and improve_at > now),
                 "levelBefore": state.level_baseline if state else None,
                 "levelAfter": state.level_current if state else None,
+                # 8D 預計完成 vs 實際完成
+                "due": due_status(r.d8_planned_at, r.d8_done_at, today),
+                "_occurred": r.tested_at,
+                "_group": r.product_model,
+                "_improved": r.improvement_effective_at,
             }
         )
-    return paginate(rows, page, page_size)
+    return _filtered_listing(rows, f)
 
 
 @router.get("/repairs/{repair_id}")
-def get_repair(repair_id: int, session: Session = Depends(get_session)):
+def get_repair(repair_id: int, scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
     """單筆維修明細：基本資料、緊急措施、長期措施（改善措施／改善時間）與 8D 內容。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     r = session.get(FactRepair, repair_id)
     if r is None or r.batch_id != batch.id:
         raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
@@ -828,9 +1006,10 @@ def get_repair(repair_id: int, session: Session = Depends(get_session)):
 
 
 @router.get("/complaints/{complaint_id}")
-def get_complaint(complaint_id: int, session: Session = Depends(get_session)):
+def get_complaint(complaint_id: int, scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
     """單筆客訴明細（含 8D 內容）。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     c = session.get(FactComplaint, complaint_id)
     if c is None or c.batch_id != batch.id:
         raise HTTPException(status_code=404, detail="找不到這筆客訴，請重新整理後再試")
@@ -838,18 +1017,31 @@ def get_complaint(complaint_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/import")
-def do_import(file: UploadFile = File(...), session: Session = Depends(get_session)):
+def do_import(
+    file: UploadFile = File(...),
+    actor: User = Depends(require_admin),
+    session: Session = Depends(get_session),
+):
     # 刻意用 def 而非 async def：內部的檔案寫入、openpyxl 解析與 DB 寫入全是同步且
     # 耗時的工作。宣告成 async def 會讓它直接跑在 event loop 上，匯入期間整個程序
     # 無法接受新連線，反向代理會出現 connect timeout。用 def 交給 threadpool 執行。
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="請上傳 .xlsx 檔案")
+    # 檔名決定資料集（廠-產品廠-線別），廠管理者只能匯入自己廠的檔案（spec §15）
+    try:
+        dataset = parse_dataset_filename(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not can_import(actor.role, actor.plant, dataset.plant):
+        raise HTTPException(status_code=403, detail=f"沒有匯入 {dataset.plant} 資料的權限（你屬於 {actor.plant}）")
 
     tmp = Path(tempfile.mkdtemp()) / file.filename
     with tmp.open("wb") as fh:
         shutil.copyfileobj(file.file, fh)
     try:
-        batch, report = import_workbook(session, str(tmp), file.filename)
+        batch, report = import_workbook(
+            session, str(tmp), os.path.basename(file.filename), imported_by=actor.username, dataset=dataset
+        )
     except ImportError_ as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
@@ -859,8 +1051,12 @@ def do_import(file: UploadFile = File(...), session: Session = Depends(get_sessi
 
 
 @router.get("/import/history")
-def import_history(session: Session = Depends(get_session)):
-    batches = session.scalars(select(ImportBatch).order_by(ImportBatch.id.desc())).all()
+def import_history(actor: User = Depends(current_user), session: Session = Depends(get_session)):
+    batches = [
+        b
+        for b in session.scalars(select(ImportBatch).order_by(ImportBatch.id.desc())).all()
+        if b.plant and can_view_plant(actor.role, actor.plant, b.plant)
+    ]
     return [
         {**_batch_info(b), "status": b.status, "isActive": b.is_active, "rowCounts": b.row_counts}
         for b in batches
@@ -891,15 +1087,16 @@ PHOTO_SUBDIR = "checks"
 
 
 @router.get("/check-items")
-def get_check_items(station: str | None = None, session: Session = Depends(get_session)):
+def get_check_items(station: str | None = None, scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
     """拍照點檢頁：站別清單，與指定站別的點檢項目＋本班進度。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     items = check_items(session, batch.id)
     stations = sorted({i.station for i in items if i.station and i.equipment_code})
     selected = [i for i in items if i.station == station and i.equipment_code] if station else []
     return {
         "stations": stations,
-        "items": monitor_rows(session, selected),
+        "items": monitor_rows(session, selected, dataset=scope.dataset),
         "shift": shift_payload(),
     }
 
@@ -912,10 +1109,11 @@ def create_check_inspection(
     status: str = Form("ok", pattern="^(ok|warn)$"),
     note: str | None = Form(None),
     file: UploadFile = File(...),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """拍照點檢：照片上傳成功即記一次點檢（預設正常，可回報異常）。"""
-    batch = _batch_or_404(session)
+    batch = scope.batch
     content = check_content.strip()
     item = session.scalars(
         select(FactCheckItem).where(
@@ -958,6 +1156,7 @@ def create_check_inspection(
             status=status,
             note=(note or "").strip() or None,
             photo_url=storage_url_for(key),
+            dataset=scope.dataset,
         )
         session.add(record)
         session.commit()
@@ -980,27 +1179,28 @@ def create_check_inspection(
 # 只有匯出的 Excel 直接換成廠區時間。
 
 
-def _station_names(session: Session) -> dict[str, str]:
-    """設備代碼 -> 站名（依目前生效批次的 KPOV 庫）；尚未匯入時為空。"""
-    batch = active_batch(session)
-    return dict(station_order(session, batch.id)) if batch else {}
+def _station_names(session: Session, batch: ImportBatch) -> dict[str, str]:
+    """設備代碼 -> 站名（依該資料集生效批次的 KPOV 庫）。"""
+    return dict(station_order(session, batch.id))
 
 
 def _photo_records(
     session: Session,
+    batch: ImportBatch,
     equipment_code: str | None = None,
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
 ) -> list[CheckPhotoInspection]:
-    stmt = select(CheckPhotoInspection).order_by(
-        CheckPhotoInspection.inspected_at.desc(), CheckPhotoInspection.id.desc()
+    """該資料集（一條線）的拍照點檢紀錄，新到舊；只列目前點檢項目底下的紀錄（REQ-V2-CHK-03）。"""
+    stmt = (
+        select(CheckPhotoInspection)
+        .where(CheckPhotoInspection.dataset == batch.dataset)
+        .order_by(CheckPhotoInspection.inspected_at.desc(), CheckPhotoInspection.id.desc())
     )
     if equipment_code:
         stmt = stmt.where(CheckPhotoInspection.equipment_code == equipment_code)
     records = session.scalars(stmt).all()
-    # 只列目前生效批次的點檢項目底下的紀錄：點檢內容改版後，舊項目的紀錄不再顯示（使用者決定）
-    batch = active_batch(session)
-    current = {item_key(i.equipment_code, i.kpov_no, i.check_content) for i in check_items(session, batch.id)} if batch else set()
+    current = {item_key(i.equipment_code, i.kpov_no, i.check_content) for i in check_items(session, batch.id)}
     records = [r for r in records if item_key(r.equipment_code, r.kpov_no, r.check_content) in current]
     # 時間篩選在 Python 端做：SQLite 存的是不帶時區的 UTC，直接在 SQL 比較帶時區的參數不可靠
     if start is not None:
@@ -1010,11 +1210,8 @@ def _photo_records(
     return records
 
 
-def _control_levels(session: Session) -> dict[tuple, str | None]:
+def _control_levels(session: Session, batch: ImportBatch) -> dict[tuple, str | None]:
     """目前點檢項目的 KPIV(x) 管控等級，以（設備, KPOV, 點檢內容）對應。"""
-    batch = active_batch(session)
-    if batch is None:
-        return {}
     return {item_key(i.equipment_code, i.kpov_no, i.check_content): i.kpiv_control_level for i in check_items(session, batch.id)}
 
 
@@ -1039,21 +1236,22 @@ def list_check_inspections(
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
     limit: int = Query(200, ge=1, le=1000),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """點檢儀表板：拍照點檢紀錄，新到舊。start／end 為帶時區的 ISO 時間（不帶時區視為 UTC）。"""
-    records = _photo_records(session, equipment_code, start, end)
-    names = _station_names(session)
-    levels = _control_levels(session)
+    records = _photo_records(session, scope.batch, equipment_code, start, end)
+    names = _station_names(session, scope.batch)
+    levels = _control_levels(session, scope.batch)
     return {"total": len(records), "items": [_photo_out(r, names, levels) for r in records[:limit]]}
 
 
 @router.get("/check-inspections/stats")
-def check_inspection_stats(session: Session = Depends(get_session)):
+def check_inspection_stats(scope: Scope = Depends(current_scope), session: Session = Depends(get_session)):
     """點檢儀表板的良率卡片：依設備（站別）彙總拍照點檢的正常／異常次數。"""
-    names = _station_names(session)
+    names = _station_names(session, scope.batch)
     stats: dict[str, dict] = {}
-    for record in _photo_records(session):
+    for record in _photo_records(session, scope.batch):
         entry = stats.setdefault(
             record.equipment_code,
             {
@@ -1066,11 +1264,148 @@ def check_inspection_stats(session: Session = Depends(get_session)):
         )
         entry["total"] += 1
         entry["okCount" if record.status == "ok" else "warnCount"] += 1
+    # 匯入的歷史點檢數量（spec §19）：只累加卡片，不受「目前點檢項目」過濾（舊點檢內容的文字可能已改）
+    for row in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)):
+        entry = stats.setdefault(
+            row.equipment_code,
+            {
+                "equipmentCode": row.equipment_code,
+                "station": names.get(row.equipment_code) or row.station or row.equipment_code,
+                "total": 0,
+                "okCount": 0,
+                "warnCount": 0,
+            },
+        )
+        entry["total"] += 1
+        entry["okCount" if row.status == "ok" else "warnCount"] += 1
+        entry["importedCount"] = entry.get("importedCount", 0) + 1
     order = {code: i for i, code in enumerate(names)}
     rows = sorted(stats.values(), key=lambda s: (order.get(s["equipmentCode"], len(order)), s["equipmentCode"]))
     for row in rows:
         row["okRate"] = round(row["okCount"] / row["total"], 4)
+        row.setdefault("importedCount", 0)
     return rows
+
+
+@router.get("/check-inspections/trend")
+def check_inspection_trend(
+    days: int = Query(14, ge=1, le=90),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
+    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days)
+
+
+def _count_import_summary(session: Session, dataset: str) -> dict:
+    rows = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == dataset)).all()
+    files: dict[str, dict] = {}
+    for r in rows:
+        f = files.setdefault(r.source or "", {"source": r.source, "count": 0, "okCount": 0, "warnCount": 0,
+                                               "from": None, "to": None, "importedAt": None, "importedBy": r.imported_by})
+        at, imported = utc(r.inspected_at), utc(r.imported_at)
+        f["count"] += 1
+        f["okCount" if r.status == "ok" else "warnCount"] += 1
+        f["from"] = min(f["from"] or at, at)
+        f["to"] = max(f["to"] or at, at)
+        f["importedAt"] = max(f["importedAt"] or imported, imported)
+    out = sorted(files.values(), key=lambda f: f["importedAt"], reverse=True)
+    for f in out:
+        f.update({k: f[k].isoformat() for k in ("from", "to", "importedAt")})
+    return {"dataset": dataset, "total": len(rows), "files": out}
+
+
+@router.get("/check-inspections/count-import")
+def count_import_summary(
+    _: User = Depends(require_super), scope: Scope = Depends(current_scope), session: Session = Depends(get_session)
+):
+    """這條線已匯入的歷史點檢數量（依檔案彙總）。"""
+    return _count_import_summary(session, scope.dataset)
+
+
+@router.post("/check-inspections/count-import")
+def import_check_counts(
+    file: UploadFile = File(...),
+    actor: User = Depends(require_super),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """匯入歷史點檢數量（spec §19，最高權限管理者）：只累加點檢看板卡片的正常／異常次數，不建立點檢紀錄。
+
+    以（設備代碼, 點檢內容, 點檢時間）去重：已匯入過、或系統內已有同一筆拍照點檢的都略過。
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=422, detail="請上傳 .xlsx 檔")
+    tmp = Path(tempfile.mkdtemp()) / "upload.xlsx"
+    try:
+        with tmp.open("wb") as fh:
+            shutil.copyfileobj(file.file, fh)
+        try:
+            parsed = parse_count_workbook(str(tmp))
+        except CountImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    def key(code, content, at):
+        return (code, (content or "").strip(), utc(at).replace(microsecond=0))
+
+    existing = {
+        key(r.equipment_code, r.check_content, r.inspected_at)
+        for r in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset))
+    } | {
+        key(r.equipment_code, r.check_content, r.inspected_at)
+        for r in session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.dataset == scope.dataset))
+    }
+    names = _station_names(session, scope.batch)
+    source = os.path.basename(file.filename)
+    now = dt.datetime.now(dt.timezone.utc)
+    added = {"ok": 0, "warn": 0}
+    stations: dict[str, dict] = {}
+    duplicates = 0
+    for row in parsed.rows:
+        k = key(row.equipment_code, row.check_content, row.inspected_at)
+        if k in existing:
+            duplicates += 1
+            continue
+        existing.add(k)
+        session.add(CheckCountImport(
+            dataset=scope.dataset, equipment_code=row.equipment_code, station=row.station,
+            check_content=row.check_content, status=row.status, inspected_at=row.inspected_at,
+            source=source, imported_by=actor.username, imported_at=now,
+        ))
+        added[row.status] += 1
+        st = stations.setdefault(row.equipment_code, {
+            "equipmentCode": row.equipment_code,
+            "station": names.get(row.equipment_code) or row.station or row.equipment_code,
+            "okCount": 0, "warnCount": 0,
+        })
+        st["okCount" if row.status == "ok" else "warnCount"] += 1
+    session.commit()
+    return {
+        "dataset": scope.dataset,
+        "source": source,
+        "added": added["ok"] + added["warn"],
+        "addedOk": added["ok"],
+        "addedWarn": added["warn"],
+        "duplicates": duplicates,
+        "invalid": parsed.invalid,
+        "invalidReasons": parsed.reasons,
+        "stations": sorted(stations.values(), key=lambda s: s["station"]),
+        "summary": _count_import_summary(session, scope.dataset),
+    }
+
+
+@router.delete("/check-inspections/count-import")
+def clear_check_counts(
+    _: User = Depends(require_super), scope: Scope = Depends(current_scope), session: Session = Depends(get_session)
+):
+    """清除這條線匯入的歷史點檢數量（誤匯時用）；不影響拍照點檢紀錄。"""
+    rows = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)).all()
+    for r in rows:
+        session.delete(r)
+    session.commit()
+    return {"deleted": len(rows)}
 
 
 # 點檢紀錄是稽核證據，不提供刪除 API（使用者 2026-10-20 決定）。
@@ -1116,6 +1451,7 @@ def export_check_inspections(
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
     base_url: str | None = Query(None, alias="baseUrl", pattern=r"^https?://[^\s]+$"),
+    scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """點檢紀錄匯出 Excel（含照片縮圖），依點檢時間由舊到新，篩選條件與列表相同。
@@ -1128,12 +1464,12 @@ def export_check_inspections(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    records = _photo_records(session, equipment_code, start, end)  # 新到舊
+    records = _photo_records(session, scope.batch, equipment_code, start, end)  # 新到舊
     if not records:
         raise HTTPException(status_code=404, detail="沒有符合條件的點檢紀錄可匯出")
     truncated = len(records) > EXPORT_MAX_ROWS
     records = list(reversed(records[:EXPORT_MAX_ROWS]))  # 取最新的 N 筆，再改成舊到新
-    names = _station_names(session)
+    names = _station_names(session, scope.batch)
     site = dt.timezone(dt.timedelta(hours=SITE_UTC_OFFSET_HOURS))
     offset = f"UTC{SITE_UTC_OFFSET_HOURS:+g}"
 

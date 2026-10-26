@@ -31,8 +31,9 @@ from ...models import ArDevice, ArInspection, DimEquipment, FactKpov
 from ...services.check_monitor import check_items, monitor_rows
 from ...services.lifecycle import build_states
 from ...services.query import active_batch
+from ..deps import require_super
 
-router = APIRouter(prefix="/api/ar", tags=["ar"])
+router = APIRouter(prefix="/api/ar", tags=["ar"], dependencies=[Depends(require_super)])
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 MAX_MARKER_ID = 63

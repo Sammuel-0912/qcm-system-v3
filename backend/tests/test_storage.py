@@ -103,6 +103,7 @@ def test_photo_upload_serve_and_export_through_s3(s3_env):
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with TestClient(app) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-pass-1234"}).status_code == 200
         _import_v3(client)
         station = client.get("/api/v1/check-items").json()["stations"][0]
         item = client.get("/api/v1/check-items", params={"station": station}).json()["items"][0]

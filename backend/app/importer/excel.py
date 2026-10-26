@@ -37,6 +37,7 @@ from ..models import (
     ImportBatch,
 )
 from ..config import CHECK_SHIFTS
+from ..services.auth import DatasetName, parse_dataset_filename
 from ..services.level import compute_level
 from . import mapping as M
 from .level_events import derive_level_events
@@ -256,9 +257,13 @@ def _provided_sheet(workbook, role: str):
 # --------------------------------------------------------------------------- 沿用前一批次
 
 
-def _active_batch_id(session: Session) -> int | None:
+def _active_batch_id(session: Session, dataset: str | None) -> int | None:
+    """同一個資料集（一條線）的生效批次：沿用上一批與維修累積都只看自己這條線。"""
     return session.scalar(
-        select(ImportBatch.id).where(ImportBatch.is_active.is_(True)).order_by(ImportBatch.id.desc()).limit(1)
+        select(ImportBatch.id)
+        .where(ImportBatch.is_active.is_(True), ImportBatch.dataset == dataset)
+        .order_by(ImportBatch.id.desc())
+        .limit(1)
     )
 
 
@@ -374,11 +379,32 @@ def import_workbook(
     filename: str,
     *,
     imported_by: str | None = None,
+    dataset: DatasetName | None = None,
 ) -> tuple[ImportBatch, ImportReport]:
+    """匯入一份 Excel 成為該資料集（一條線）的新生效批次。
+
+    dataset 未給時依檔名解析；檔名不合格式（例：測試或命令列匯入）時歸到預設的 WJ1-DCS-PM1。
+    API 會在呼叫前先驗證檔名與權限（spec §15）。
+    """
+    if dataset is None:
+        try:
+            dataset = parse_dataset_filename(filename)
+        except ValueError:
+            dataset = DatasetName("WJ1", "DCS", "PM1", "")
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     report = ImportReport()
 
-    batch = ImportBatch(filename=filename, imported_by=imported_by, status="pending", row_counts={})
+    batch = ImportBatch(
+        filename=filename,
+        imported_by=imported_by,
+        status="pending",
+        row_counts={},
+        plant=dataset.plant,
+        factory=dataset.factory,
+        line_code=dataset.line,
+        dataset=dataset.key,
+        data_date=dataset.date or None,
+    )
     session.add(batch)
     session.flush()
 
@@ -394,8 +420,12 @@ def import_workbook(
     batch.status = "success"
     batch.error_log = report.as_dict()
 
-    # 切換生效批次（單一交易內）
-    session.execute(update(ImportBatch).where(ImportBatch.id != batch.id).values(is_active=False))
+    # 切換生效批次（單一交易內）：只停用同一個資料集的舊批次，其他廠／線不受影響
+    session.execute(
+        update(ImportBatch)
+        .where(ImportBatch.id != batch.id, ImportBatch.dataset == batch.dataset)
+        .values(is_active=False)
+    )
     batch.is_active = True
     session.commit()
     return batch, report
@@ -497,7 +527,7 @@ class _StationLookup:
 
 
 def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportReport) -> None:
-    previous = _active_batch_id(session)
+    previous = _active_batch_id(session, batch.dataset)
 
     def carry(model, label: str, key: str) -> None:
         count = _carry_over(session, model, previous, batch.id)

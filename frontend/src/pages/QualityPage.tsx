@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { formatLocalDateTime } from '../utils/datetime'
+import { useAuth } from '../auth/AuthContext'
 import { AppShell } from '../components/AppShell'
 
 import {
@@ -17,6 +18,7 @@ import {
   type TrendResponse,
 } from '../api/client'
 import { HOTSPOTS } from '../layoutConfig'
+import { BroadcastBar } from '../components/BroadcastBar'
 import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
 import { ImportDialog } from '../components/ImportDialog'
@@ -100,6 +102,7 @@ export default function QualityPage() {
   // 措施表點列：8D 明細／等級歷程側欄
   const [detail, setDetail] = useState<RecordTarget | null>(null)
   const [showImport, setShowImport] = useState(false)
+  const { isAdmin, refresh } = useAuth()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -229,33 +232,45 @@ export default function QualityPage() {
       ? '目前篩選範圍'
       : '全線'
 
+  // 匯入完成：更新可看的線別並切到剛匯入的線；同一條線則就地重新載入
+  function closeImport(importedDataset?: string) {
+    setShowImport(false)
+    if (!importedDataset) return
+    void refresh(importedDataset).then(() => setReloadKey((k) => k + 1))
+  }
+
   function openHistory(kpovNo: string, equipmentCode: string) {
     void api.history(kpovNo, equipmentCode).then(setHistory).catch(() => setHistory(null))
   }
 
   if (error) {
+    // 包在 AppShell 裡：沒有資料時仍能切換線別、管理使用者、登出
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
-        <div className="max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center">
-          <p className="mb-4 text-slate-700">{error}</p>
-          <button
-            onClick={() => setShowImport(true)}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-          >
-            匯入資料
-          </button>
+      <AppShell title="總覽">
+        <div className="flex min-h-[60vh] items-center justify-center p-6">
+          <div className="max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center">
+            <p className="mb-4 text-slate-700">{error}</p>
+            {isAdmin ? (
+              <button
+                onClick={() => setShowImport(true)}
+                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+              >
+                匯入資料
+              </button>
+            ) : (
+              <p className="text-sm text-slate-500">請洽廠管理者匯入 Excel。</p>
+            )}
+          </div>
         </div>
-        {showImport && (
-          <ImportDialog onClose={() => setShowImport(false)} onImported={() => setReloadKey((k) => k + 1)} />
-        )}
-      </div>
+        {showImport && <ImportDialog onClose={closeImport} />}
+      </AppShell>
     )
   }
 
   const inheritance = quadrant?.lineInheritance
   const windowHint = WINDOWS.find((w) => w.value === changeWindow)?.hint ?? ''
 
-  const headerActions = (
+  const headerActions = isAdmin && (
     <>
       <button
         onClick={() => setShowImport(true)}
@@ -270,6 +285,9 @@ export default function QualityPage() {
     <AppShell title="總覽" actions={headerActions}>
 
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+        {/* ── 廣播：Level 3 個數、當班點檢、等級提升的站別（整條線，只跟期間連動） ── */}
+        <BroadcastBar window={changeWindow} windowHint={windowHint} reloadKey={reloadKey} />
+
         {/* ── 頂部：篩選器（只影響象限圖與異動總覽） ── */}
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-end gap-4">
@@ -493,7 +511,7 @@ export default function QualityPage() {
       {detail && <RecordDetailDrawer target={detail} onClose={() => setDetail(null)} />}
 
       {showImport && (
-        <ImportDialog onClose={() => setShowImport(false)} onImported={() => setReloadKey((k) => k + 1)} />
+        <ImportDialog onClose={closeImport} />
       )}
     </AppShell>
   )

@@ -15,6 +15,10 @@ export interface Env {
   // 機密（wrangler secret put）
   QCM_S3_ACCESS_KEY_ID: string
   QCM_S3_SECRET_ACCESS_KEY: string
+  // 登入（spec §15，選用；沒設定時後端會用隨機金鑰、且沒有管理者可登入）
+  QCM_JWT_SECRET?: string
+  QCM_ADMIN_USERNAME?: string
+  QCM_ADMIN_PASSWORD?: string
 }
 
 export class Backend extends Container<Env> {
@@ -38,6 +42,9 @@ export class Backend extends Container<Env> {
       QCM_S3_REGION: 'auto',
       QCM_S3_ACCESS_KEY_ID: env.QCM_S3_ACCESS_KEY_ID,
       QCM_S3_SECRET_ACCESS_KEY: env.QCM_S3_SECRET_ACCESS_KEY,
+      ...(env.QCM_JWT_SECRET ? { QCM_JWT_SECRET: env.QCM_JWT_SECRET } : {}),
+      ...(env.QCM_ADMIN_USERNAME ? { QCM_ADMIN_USERNAME: env.QCM_ADMIN_USERNAME } : {}),
+      ...(env.QCM_ADMIN_PASSWORD ? { QCM_ADMIN_PASSWORD: env.QCM_ADMIN_PASSWORD } : {}),
     }
   }
 

@@ -1,3 +1,5 @@
+import { apiFetch, withDataset } from './session'
+
 const BASE = '/api/v1'
 
 export type LevelCounts = {
@@ -136,6 +138,49 @@ export type LevelChangesResponse = {
 }
 
 export type Paged<T> = { page: number; pageSize: number; total: number; pages: number; items: T[] }
+
+/** 完成期限（spec §17）：8D 預計完成 vs 實際完成 */
+export type DueKey = 'planned' | 'ontime' | 'overdue' | 'lt7' | 'd7_14' | 'gt14'
+export type Due = {
+  status: 'planned' | 'ontime' | 'overdue'
+  overdueDays: number
+  bucket: 'lt7' | 'd7_14' | 'gt14' | null
+  plannedAt: string
+  doneAt: string | null
+}
+export type DueStats = Record<Exclude<DueKey, 'ontime'>, number>
+
+/** 製程風險管理／客訴案件管理的篩選（日期為 YYYY-MM-DD，起訖皆含） */
+export type ListFilter = {
+  occurredFrom: string
+  occurredTo: string
+  /** 製程＝機種；客訴＝客戶 */
+  groups: string[]
+  stations: string[]
+  kpovs: string[]
+  improvedFrom: string
+  improvedTo: string
+  due: DueKey | ''
+}
+
+export type FilteredPaged<T> = Paged<T> & {
+  dueStats: DueStats
+  options: { groups: string[]; stations: string[]; kpovs: { value: string; label: string }[] }
+}
+
+function listParams(f: ListFilter, page: number) {
+  return {
+    occurredFrom: f.occurredFrom || undefined,
+    occurredTo: f.occurredTo || undefined,
+    group: f.groups,
+    station: f.stations,
+    kpov: f.kpovs,
+    improvedFrom: f.improvedFrom || undefined,
+    improvedTo: f.improvedTo || undefined,
+    due: f.due || undefined,
+    page: String(page),
+  }
+}
 
 export type LevelShift = { before: number | null; after: number | null; planned: boolean }
 
@@ -277,6 +322,10 @@ export type Complaint = {
   emergencyMeasureAt: string | null
   improvement: string | null
   improvementAt: string | null
+  /** 清單才有：KPOV 對應的站別（對不到時為製程單元）、KPOV 名稱、完成期限 */
+  station?: string | null
+  kpovName?: string | null
+  due?: Due | null
   eightD: EightD | null
   site: string | null
   plant: string | null
@@ -312,6 +361,7 @@ export type RepairRow = {
   improvePlanned: boolean
   levelBefore: number | null
   levelAfter: number | null
+  due: Due | null
 }
 
 export type RepairDetail = {
@@ -437,6 +487,24 @@ export type PhotoInspection = {
 }
 
 /** 點檢儀表板良率卡片：依設備（站別）彙總 */
+/** 點檢看板趨勢與分布（spec §18） */
+export type CheckTrend = {
+  days: number
+  since: string
+  trackingFrom: string | null
+  series: { date: string; warn: number; inspected: number; missed: number; expected: number }[]
+  items: {
+    station: string | null
+    equipmentCode: string
+    kpovNo: string | null
+    checkContent: string | null
+    kpivControlLevel: string | null
+    total: number
+    warn: number
+  }[]
+  totals: { total: number; ok: number; warn: number; missed: number }
+}
+
 export type PhotoInspectionStat = {
   equipmentCode: string
   station: string
@@ -444,22 +512,109 @@ export type PhotoInspectionStat = {
   okCount: number
   warnCount: number
   okRate: number
+  /** 其中由「匯入歷史點檢數量」補回的次數（spec §19） */
+  importedCount: number
+}
+
+/** 匯入歷史點檢數量（spec §19，最高權限管理者） */
+export type CountImportSummary = {
+  dataset: string
+  total: number
+  files: { source: string | null; count: number; okCount: number; warnCount: number; from: string; to: string; importedAt: string; importedBy: string | null }[]
+}
+export type CountImportResult = {
+  dataset: string
+  source: string
+  added: number
+  addedOk: number
+  addedWarn: number
+  duplicates: number
+  invalid: number
+  invalidReasons: string[]
+  stations: { equipmentCode: string; station: string; okCount: number; warnCount: number }[]
+  summary: CountImportSummary
 }
 
 export class ApiError extends Error {}
 
-async function get<T>(path: string, params: Record<string, string | undefined> = {}): Promise<T> {
+export type Role = 'super_admin' | 'plant_admin' | 'user'
+
+export type AuthUser = {
+  id: number
+  username: string
+  displayName: string
+  role: Role
+  roleLabel: string
+  plant: string | null
+  isActive: boolean
+  createdAt: string | null
+  lastLoginAt: string | null
+}
+
+/** 資料集＝一條線的生效資料，例 WJ1-DCS-PM1 */
+export type DatasetInfo = {
+  key: string
+  plant: string
+  factory: string
+  line: string
+  filename: string
+  importedAt: string | null
+}
+
+export const PLANTS = ['WJ1', 'WJ2', 'WJ3', 'WJ4', 'WJ5', 'WJ6', 'WJ7', 'WJ8'] as const
+
+async function send<T>(method: string, path: string, body: unknown, fallback: string): Promise<T> {
+  const res = await apiFetch(`${BASE}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({ detail: res.statusText }))
+  if (!res.ok) {
+    const detail = Array.isArray(data.detail) ? data.detail.map((d: { msg: string }) => d.msg).join('；') : data.detail
+    throw new ApiError(typeof detail === 'string' ? detail : fallback)
+  }
+  return data as T
+}
+
+async function get<T>(path: string, params: Record<string, string | string[] | undefined> = {}): Promise<T> {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
-    if (value) search.set(key, value)
+    // 陣列＝多選，以重複的參數送出（?station=A&station=B）
+    if (Array.isArray(value)) value.forEach((v) => search.append(key, v))
+    else if (value) search.set(key, value)
   }
   const query = search.toString()
-  const res = await fetch(`${BASE}${path}${query ? `?${query}` : ''}`)
+  const res = await apiFetch(`${BASE}${path}${query ? `?${query}` : ''}`)
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(detail.detail ?? '請求失敗')
   }
   return res.json() as Promise<T>
+}
+
+/** 總覽廣播（spec §16）：整條線、不吃篩選器 */
+export type BroadcastResponse = {
+  window: ChangeWindow
+  since: string
+  level3: { start: number; now: number; delta: number }
+  inspection: {
+    shift: { name: string; label: string; start: string; end: string; ended: boolean }
+    items: number
+    expected: number
+    completed: number
+    warn: number
+  }
+  escalations: {
+    station: string
+    kpovNo: string
+    kpovName: string
+    equipmentCode: string
+    levelBefore: number | null
+    levelAfter: number
+    at: string
+  }[]
+  escalatedStations: string[]
 }
 
 type Scope = { station?: string; line?: string; attribute?: string; target?: string }
@@ -468,6 +623,7 @@ export const api = {
   filters: () => get<FiltersResponse>('/filters'),
   quadrant: (p: Scope & { view: string; window?: ChangeWindow }) => get<QuadrantResponse>('/quadrant', p),
   checkMonitor: (p: Scope) => get<CheckMonitorResponse>('/check-monitor', p),
+  broadcast: (window: ChangeWindow) => get<BroadcastResponse>('/broadcast', { window }),
   trend: (p: Scope) => get<TrendResponse>('/trend', p),
   kpov: (p: Scope & { view: string; level?: string; deviatedOnly?: string; window?: ChangeWindow }) =>
     get<{ total: number; items: KpovItem[] }>('/kpov', p),
@@ -478,9 +634,8 @@ export const api = {
     get<ComplaintSummary>('/complaints/summary', { ...p, page: String(p.page) }),
   processSummary: (p: Scope & { page: number; window?: ChangeWindow }) =>
     get<ProcessSummary>('/process/summary', { ...p, page: String(p.page) }),
-  complaints: (p: { q?: string; page: number }) =>
-    get<Paged<Complaint>>('/complaints', { q: p.q, page: String(p.page) }),
-  repairs: (p: { q?: string; page: number }) => get<Paged<RepairRow>>('/repairs', { q: p.q, page: String(p.page) }),
+  complaints: (f: ListFilter, page: number) => get<FilteredPaged<Complaint>>('/complaints', listParams(f, page)),
+  repairs: (f: ListFilter, page: number) => get<FilteredPaged<RepairRow>>('/repairs', listParams(f, page)),
   /** 單筆維修／客訴明細（含 8D） */
   repair: (id: number) => get<RepairRecord>(`/repairs/${id}`),
   complaint: (id: number) => get<Complaint>(`/complaints/${id}`),
@@ -521,7 +676,7 @@ export const api = {
     form.append('status', p.status)
     if (p.note) form.append('note', p.note)
     form.append('file', p.file)
-    const res = await fetch(`${BASE}/check-inspections`, { method: 'POST', body: form })
+    const res = await apiFetch(`${BASE}/check-inspections`, { method: 'POST', body: form })
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '上傳失敗')
     return body as { id: number; status: string; photoUrl: string; inspectedAt: string }
@@ -530,23 +685,52 @@ export const api = {
   photoInspections: (p: { equipmentCode?: string; start?: string; end?: string }) =>
     get<{ total: number; items: PhotoInspection[] }>('/check-inspections', p),
   photoInspectionStats: () => get<PhotoInspectionStat[]>('/check-inspections/stats'),
+  checkTrend: (days: number) => get<CheckTrend>('/check-inspections/trend', { days: String(days) }),
   /** 匯出含照片的 Excel；篩選條件同列表，baseUrl 用來組出可點的原圖連結 */
   photoInspectionExportUrl: (p: { equipmentCode?: string; start?: string; end?: string; baseUrl?: string }) => {
     const search = new URLSearchParams()
     for (const [key, value] of Object.entries(p)) if (value) search.set(key, value)
     const query = search.toString()
-    return `${BASE}/check-inspections/export${query ? `?${query}` : ''}`
+    // 瀏覽器直接下載帶不了 header，資料集放查詢參數
+    return withDataset(`${BASE}/check-inspections/export${query ? `?${query}` : ''}`)
   },
+  // ── 登入與帳號（spec §15 RBAC）──
+  async login(username: string, password: string) {
+    return send<AuthUser>('POST', '/auth/login', { username, password }, '登入失敗')
+  },
+  async logout() {
+    await apiFetch(`${BASE}/auth/logout`, { method: 'POST' })
+  },
+  me: () => get<AuthUser & { datasets: DatasetInfo[] }>('/auth/me'),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    send<{ ok: boolean }>('POST', '/auth/password', { oldPassword, newPassword }, '修改密碼失敗'),
+  users: () => get<AuthUser[]>('/users'),
+  createUser: (u: { username: string; displayName: string; password: string; role: Role; plant: string | null }) =>
+    send<AuthUser>('POST', '/users', u, '新增帳號失敗'),
+  updateUser: (id: number, patch: { displayName?: string; role?: Role; plant?: string | null; isActive?: boolean }) =>
+    send<AuthUser>('PATCH', `/users/${id}`, patch, '更新帳號失敗'),
+  resetPassword: (id: number, password: string) =>
+    send<AuthUser>('POST', `/users/${id}/reset-password`, { password }, '重設密碼失敗'),
+  countImportSummary: () => get<CountImportSummary>('/check-inspections/count-import'),
+  async countImport(file: File): Promise<CountImportResult> {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await apiFetch(`${BASE}/check-inspections/count-import`, { method: 'POST', body: form })
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '匯入失敗')
+    return body
+  },
+  clearCountImport: () => send<{ deleted: number }>('DELETE', '/check-inspections/count-import', undefined, '清除失敗'),
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)
-    const res = await fetch(`${BASE}/import`, { method: 'POST', body: form })
+    const res = await apiFetch(`${BASE}/import`, { method: 'POST', body: form })
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(body.detail ?? '匯入失敗')
     return body
   },
   async heartbeat(sid: string): Promise<{ online: number }> {
-    const res = await fetch(`${BASE}/presence/heartbeat`, {
+    const res = await apiFetch(`${BASE}/presence/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sid }),

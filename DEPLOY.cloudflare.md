@@ -120,6 +120,16 @@ npx wrangler secret put QCM_S3_SECRET_ACCESS_KEY
 
 > 第一次執行時 Worker 還不存在，wrangler 會問是否要先建立 `qcm-v3` 再加 secret，回答 **Y**。
 
+再設定登入用的三個 secret（沒設定的話沒有人能登入）：
+
+```bash
+npx wrangler secret put QCM_JWT_SECRET        # 長隨機字串，例：openssl rand -hex 32
+npx wrangler secret put QCM_ADMIN_USERNAME    # 第一位最高權限管理者帳號，例：admin
+npx wrangler secret put QCM_ADMIN_PASSWORD    # 至少 8 碼
+```
+
+> `QCM_ADMIN_*` 只在資料庫裡還沒有最高權限管理者時建立帳號；之後改密碼請從網頁右上角改。
+
 ---
 
 ## 步驟 6：部署
@@ -152,7 +162,8 @@ npx wrangler containers list
 
 1. 打開部署網址。第一次（或閒置 30 分鐘後）開啟時，後端要先從 R2 還原資料庫再啟動，**可能需要 10～60 秒**。
 2. 確認後端已就緒：瀏覽器開 `https://<你的網址>/health`，看到 `{"status":"ok"}`。
-3. 回到首頁，右上角 **匯入資料** → 選 `數據庫-1019.xlsx`。
+3. 回到首頁，用步驟 5 的 `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD` 登入，右上角 **匯入資料** →
+   選 `WJ1-DCS-PM1-數據庫-1026.xlsx`（檔名必須是 `廠-產品廠-線別-數據庫-月日.xlsx`）。
 4. 匯入完成後，到 Dashboard → R2 → `qcm-v3`，應該看到：
    - `db/`：資料庫備份（Litestream）
    - 之後拍照點檢時會出現 `checks/`：照片
