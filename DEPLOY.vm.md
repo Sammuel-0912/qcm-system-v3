@@ -36,6 +36,13 @@ docker pull postgres:16-alpine
 docker save qcm-api:latest qcm-web:latest postgres:16-alpine | gzip > qcm-images.tar.gz
 ```
 
+> 上面是 Git Bash 語法。`VAR=值 指令` 和 `gzip` 在 Windows 的 cmd／PowerShell 不能用，改用：
+>
+> - **cmd**：`set "POSTGRES_PASSWORD=build-only"`，再 `docker compose build`
+> - **PowerShell**：`$env:POSTGRES_PASSWORD="build-only"`，再 `docker compose build`
+>
+> 打包改成 `docker save -o qcm-images.tar qcm-api:latest qcm-web:latest postgres:16-alpine`（不壓縮，約大一倍）。之後步驟的 `qcm-images.tar.gz` 都換成 `qcm-images.tar`，`docker load -i` 兩種都能讀。
+>
 > 開發機若是 Apple Silicon（ARM）等非 x86 機器，建置時要指定平台：
 > `DOCKER_DEFAULT_PLATFORM=linux/amd64 POSTGRES_PASSWORD=build-only docker compose build`，再 `docker pull --platform linux/amd64 postgres:16-alpine`。
 

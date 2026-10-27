@@ -86,7 +86,7 @@ function SideNav() {
   )
 }
 
-export const PLATFORM_NAME = 'CNE WJ1 DCS 品控力風險智控平台'
+export const PLATFORM_NAME = 'CNE 品控力風險智控平台'
 const PIN_KEY = 'qcm.sidebar.pinned'
 
 function readPinned(): boolean {
@@ -107,7 +107,7 @@ function writePinned(pinned: boolean) {
 
 function SidebarTitle() {
   return (
-    <div className="whitespace-nowrap border-b border-slate-100 px-4 py-4 text-sm font-semibold text-slate-800">
+    <div className="whitespace-nowrap border-b border-slate-100 px-4 py-4 text-lg font-semibold text-slate-1200">
       {PLATFORM_NAME}
     </div>
   )

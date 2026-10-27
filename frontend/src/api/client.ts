@@ -502,7 +502,7 @@ export type CheckTrend = {
     total: number
     warn: number
   }[]
-  totals: { total: number; ok: number; warn: number; missed: number }
+  totals: { total: number; ok: number; warn: number; missed: number; /** 期間內匯入的歷史點檢次數（spec §19） */ imported: number }
 }
 
 export type PhotoInspectionStat = {
@@ -594,9 +594,24 @@ async function get<T>(path: string, params: Record<string, string | string[] | u
 }
 
 /** 總覽廣播（spec §16）：整條線、不吃篩選器 */
+/** 廣播跑馬燈的關注項目（spec §16，v2.7） */
+export type BroadcastAlert = {
+  kind: 'missed' | 'warn' | 'escalatedL3' | 'level3New'
+  station: string | null
+  equipmentCode: string | null
+  kpovNo: string | null
+  /** 點檢內容（漏點檢／點檢異常）或 KPOV 名稱（Level 3） */
+  text: string | null
+  /** 當班漏點檢的時段數／點檢異常次數 */
+  count?: number
+  levelBefore?: number | null
+  levelAfter?: number
+}
+
 export type BroadcastResponse = {
   window: ChangeWindow
   since: string
+  alerts: BroadcastAlert[]
   level3: { start: number; now: number; delta: number }
   inspection: {
     shift: { name: string; label: string; start: string; end: string; ended: boolean }

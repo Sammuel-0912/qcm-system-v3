@@ -41,6 +41,7 @@ from ...services.station_levels import event_levels, kpov_levels, station_order
 from ...services.tracking import complaint_summary, paginate, process_summary
 from ...services.check_monitor import (
     EXPORT_SHIFT_NAMES,
+    SLOT_MISSED,
     SLOT_OK,
     SLOT_WARN,
     check_items,
@@ -569,6 +570,7 @@ def get_broadcast(
     - level3：Level 3 個數，期初（期間第一天）→ 現在，與象限圖同一套算法
     - inspection：當班（白班／夜班）的點檢次數：已點檢／應點檢、其中異常
     - escalations：期間內等級提升的站別（ESCALATED 事件，依不良發生時間）
+    - alerts：跑馬燈只列需要關注的項目（v2.7）：當班漏點檢、當班點檢異常、期間內升到 Level 3、期間內新增的 Level 3
     """
     batch = scope.batch
     now = dt.datetime.now(dt.timezone.utc)
@@ -606,9 +608,33 @@ def get_broadcast(
             }
         )
 
+    alerts = []
+    for row in rows:
+        for kind, state in (("missed", SLOT_MISSED), ("warn", SLOT_WARN)):
+            count = sum(1 for slot in row["slots"] if slot["state"] == state)
+            if count:
+                alerts.append({"kind": kind, "station": row["station"], "equipmentCode": row["equipmentCode"],
+                               "kpovNo": row["kpovNo"], "text": row["checkContent"], "count": count})
+    # 升到 Level 3：每個 KPOV 取期間內最近一次（escalations 已新到舊）
+    to_level3 = {}
+    for e in escalations:
+        if e["levelAfter"] == 3:
+            to_level3.setdefault((e["kpovNo"], e["equipmentCode"]), e)
+    for e in to_level3.values():
+        alerts.append({"kind": "escalatedL3", "station": e["station"], "equipmentCode": e["equipmentCode"],
+                       "kpovNo": e["kpovNo"], "text": e["kpovName"], "levelBefore": e["levelBefore"], "levelAfter": 3})
+    # 新增的 Level 3：期初不是 Level 3、現在是；已在「升到 Level 3」列出的不重複
+    was_level3 = {(s.kpov.kpov_no, s.kpov.equipment_code) for s in start_states if s.level_for("current") == 3}
+    for st in states:
+        key = (st.kpov.kpov_no, st.kpov.equipment_code)
+        if st.level_for("current") == 3 and key not in was_level3 and key not in to_level3:
+            alerts.append({"kind": "level3New", "station": st.kpov.station, "equipmentCode": st.kpov.equipment_code,
+                           "kpovNo": st.kpov.kpov_no, "text": st.kpov.kpov_name})
+
     return {
         "window": window,
         "since": since.isoformat(),
+        "alerts": alerts,
         "level3": {"start": level3_start, "now": level3_now, "delta": level3_now - level3_start},
         "inspection": {
             # 使用者慣稱白班／夜班（與點檢紀錄匯出相同）
@@ -1294,7 +1320,8 @@ def check_inspection_trend(
     session: Session = Depends(get_session),
 ):
     """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
-    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days)
+    imported = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)).all()
+    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days, imported=imported)
 
 
 def _count_import_summary(session: Session, dataset: str) -> dict:

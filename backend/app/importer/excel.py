@@ -546,6 +546,11 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
         session.add(DimDetectionMethod(batch_id=batch.id, method_name=name, score=score))
     method_scores = dict(dictionary)
     report.row_counts["detectionMethods"] = len(dictionary)
+    # 分數 → 偵測方式：補空白的偵測方式欄用（同分有兩種以上方式時無法判定，不補）
+    by_score: dict[int, list[str]] = {}
+    for name, score in dictionary:
+        by_score.setdefault(score, []).append(name)
+    method_by_score = {score: names[0] for score, names in by_score.items() if len(names) == 1}
 
     # 2) 設備維度：Dim_Equipment（舊版）＋ 設備對應參考（新版，含 OP 人工站）
     equipment_sheet = _provided_sheet(workbook, "equipment")
@@ -789,6 +794,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 }
             )
             continue
+        _fill_methods_from_eight_d(data, method_by_score, row_no, report)
         if not legacy:
             for method_field, score_field in (
                 ("small_y_method_after", "_small_y_score_after"),
@@ -1077,6 +1083,39 @@ def _named_columns(head: list[tuple], names: dict[str, str]) -> dict[str, int]:
             if field and field not in found:
                 found[field] = i
     return found
+
+
+# 修護報表的偵測方式欄（BQ～BT）空白時，改用同一列 8D 區塊的偵測度分數換成字典裡的偵測方式（v2.8）：
+# 改善前 小y／大Y（Z／W 欄）→ 不良發生時；改善後（AX／BA 欄）→ 改善後。
+_EIGHT_D_METHOD_FALLBACK = (
+    ("small_y_method_after", "small_y_score_before", "小y偵測方式"),
+    ("big_y_method_after", "big_y_score_before", "大y偵測方式"),
+    ("small_y_method_improved", "small_y_score_after", "小y偵測方式(變化後)"),
+    ("big_y_method_improved", "big_y_score_after", "大y偵測方式(變化後)"),
+)
+
+
+def _fill_methods_from_eight_d(data: dict, method_by_score: dict[int, str], row_no: int, report) -> None:
+    filled, missing = [], []
+    for method_field, score_field, label in _EIGHT_D_METHOD_FALLBACK:
+        if data.get(method_field):
+            continue
+        score = _to_int(data.get(M.REPAIR_EIGHT_D_PREFIX + score_field))
+        if score is None:
+            continue
+        method = method_by_score.get(score)
+        if method is None:
+            missing.append(f"{label}（8D {score} 分）")
+            continue
+        data[method_field] = method
+        filled.append(f"{label}＝{method}（8D {score} 分）")
+    serial = data.get("serial_no") or "（無序號）"
+    if filled:
+        report.warnings.append(f"修護報表第 {row_no} 列（序號 {serial}）偵測方式空白，依 8D 偵測度補上：" + "、".join(filled))
+    if missing:
+        report.warnings.append(
+            f"修護報表第 {row_no} 列（序號 {serial}）偵測方式空白，8D 分數在字典中對不到唯一的偵測方式：" + "、".join(missing)
+        )
 
 
 def _eight_d_values(row: tuple, index: dict[str, int]) -> dict[str, Any]:
