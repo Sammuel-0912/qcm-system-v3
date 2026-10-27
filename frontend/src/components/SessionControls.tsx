@@ -15,7 +15,7 @@ export function DatasetSelect() {
   }
   if (datasets.length === 1) {
     return (
-      <span className="rounded bg-sky-50 px-2 py-1 font-mono text-xs text-sky-800" title="目前的廠／產品廠／線別">
+      <span className="rounded bg-sky-50 px-2.5 py-1 font-mono text-sm text-sky-800" title="目前的廠／產品廠／線別">
         {datasets[0].key}
       </span>
     )

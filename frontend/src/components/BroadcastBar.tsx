@@ -1,37 +1,87 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
-import { api, type BroadcastResponse, type ChangeWindow } from '../api/client'
+import { api, type BroadcastAlert, type BroadcastResponse, type ChangeWindow } from '../api/client'
 import { LevelChange } from './LevelChip'
-
-type Tone = 'bad' | 'good' | 'info' | 'warn' | 'muted'
-
-const TONES: Record<Tone, string> = {
-  bad: 'border-red-200 bg-red-50 text-red-800',
-  good: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  info: 'border-sky-200 bg-sky-50 text-sky-800',
-  warn: 'border-amber-200 bg-amber-50 text-amber-800',
-  muted: 'border-slate-200 bg-slate-50 text-slate-600',
-}
 
 // 點檢次數每分鐘更新一次（拍照點檢是在別的裝置上做的）
 const REFRESH_MS = 60_000
-// 等級提升的站別最多列幾個，其餘以「等 N 站」帶過
-const MAX_STATIONS = 3
+// 跑馬燈速度（px／秒）：內容越多一圈越久，速度不變
+const SPEED = 60
 
-function Item({ tone, label, children }: { tone: Tone; label: string; children: ReactNode }) {
+const KINDS: Record<BroadcastAlert['kind'], { label: string; chip: string; order: number }> = {
+  escalatedL3: { label: '升到 Level 3', chip: 'bg-red-600 text-white', order: 0 },
+  level3New: { label: '新增 Level 3', chip: 'bg-red-100 text-red-800 ring-1 ring-red-200', order: 1 },
+  warn: { label: '點檢異常', chip: 'bg-amber-100 text-amber-800 ring-1 ring-amber-200', order: 2 },
+  missed: { label: '漏點檢', chip: 'bg-violet-100 text-violet-800 ring-1 ring-violet-200', order: 3 },
+}
+
+function AlertItem({ alert, shiftName, windowHint }: { alert: BroadcastAlert; shiftName: string; windowHint: string }) {
+  const kind = KINDS[alert.kind]
+  const scope = alert.kind === 'missed' || alert.kind === 'warn' ? shiftName : windowHint
   return (
-    <div className={`flex min-w-0 flex-1 items-center gap-2 rounded-md border px-3 py-2 text-sm ${TONES[tone]}`}>
-      <span className="shrink-0 text-xs font-semibold opacity-70">{label}</span>
-      <span className="min-w-0">{children}</span>
+    <span className="inline-flex items-center gap-2 whitespace-nowrap text-sm text-slate-700">
+      <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${kind.chip}`}>
+        {kind.label}・{scope}
+      </span>
+      <span className="font-medium text-slate-800">{alert.station}</span>
+      {alert.text && <span className="text-slate-600">{alert.text}</span>}
+      {alert.kind === 'escalatedL3' && <LevelChange before={alert.levelBefore ?? null} after={3} />}
+      {alert.kind === 'missed' && <span className="font-semibold text-violet-700">{alert.count} 個時段未點檢</span>}
+      {alert.kind === 'warn' && <span className="font-semibold text-amber-700">異常 {alert.count} 次</span>}
+    </span>
+  )
+}
+
+/**
+ * 無限跑馬燈：一開始內容就在畫面上，往左捲；後面接一模一樣的一份，捲完一份剛好回到起點，看起來無限循環。
+ * 內容比畫面窄時先重複到填滿一個畫面寬，避免中間出現空白。滑鼠移上去暫停。
+ */
+function Marquee({ contentKey, children }: { contentKey: string; children: ReactNode }) {
+  const viewport = useRef<HTMLDivElement>(null)
+  const group = useRef<HTMLDivElement>(null)
+  const [copies, setCopies] = useState(1)
+  const [duration, setDuration] = useState(30)
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const view = viewport.current?.clientWidth ?? 0
+      const width = group.current?.offsetWidth ?? 0
+      if (!width) return
+      const n = Math.max(1, Math.ceil(view / width))
+      setCopies(n)
+      setDuration((width * n) / SPEED)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    if (viewport.current) observer.observe(viewport.current)
+    return () => observer.disconnect()
+  }, [contentKey])
+
+  const half = (prefix: string) =>
+    Array.from({ length: copies }, (_, i) => (
+      <div
+        key={`${prefix}${i}`}
+        ref={prefix === 'a' && i === 0 ? group : undefined}
+        aria-hidden={prefix === 'b' || i > 0 ? true : undefined}
+        className="flex shrink-0 items-center gap-8 pr-8"
+      >
+        {children}
+      </div>
+    ))
+
+  return (
+    <div ref={viewport} className="qcm-marquee-viewport min-w-0 flex-1 overflow-hidden">
+      <div className="qcm-marquee flex w-max" style={{ animationDuration: `${duration}s` }}>
+        {half('a')}
+        {half('b')}
+      </div>
     </div>
   )
 }
 
 /**
- * 總覽頁頂端的廣播（spec §16）：整條線、不吃篩選器，只跟期間連動。
- * a. Level 3 個數有沒有變化（期初 → 現在）
- * b. 當班（白班／夜班）點檢了幾次
- * c. 期間內有沒有站別的 Level 提升
+ * 總覽頁頂端的廣播（spec §16）：整條線、不吃篩選器，Level 相關跟期間連動。
+ * v2.7 起改為跑馬燈，只列需要關注的項目：升到 Level 3、新增 Level 3、當班點檢異常、當班漏點檢。
  */
 export function BroadcastBar({
   window,
@@ -60,61 +110,33 @@ export function BroadcastBar({
   }, [window, reloadKey])
 
   if (!data) return null
-  const { level3, inspection, escalations, escalatedStations } = data
-
-  const level3Tone: Tone = level3.delta > 0 ? 'bad' : level3.delta < 0 ? 'good' : 'muted'
-  const level3Text =
-    level3.delta === 0
-      ? `無變化，維持 ${level3.now} 項`
-      : `${level3.delta > 0 ? '增加' : '減少'} ${Math.abs(level3.delta)} 項（${level3.start} → ${level3.now}）`
-
-  const done = inspection.completed >= inspection.expected
-  const inspectionTone: Tone =
-    inspection.warn > 0 ? 'bad' : done ? 'good' : inspection.shift.ended ? 'warn' : 'info'
-
-  // 每站取最近一次提升（後端已依時間新到舊排序）
-  const latestByStation = new Map<string, BroadcastResponse['escalations'][number]>()
-  for (const e of escalations) if (!latestByStation.has(e.station)) latestByStation.set(e.station, e)
-  const shown = [...latestByStation.values()].slice(0, MAX_STATIONS)
-  const detail = escalations
-    .map((e) => `${e.station}・${e.kpovName}：L${e.levelBefore ?? '—'} → L${e.levelAfter}`)
-    .join('\n')
+  const alerts = [...data.alerts].sort((a, b) => KINDS[a.kind].order - KINDS[b.kind].order)
+  const shiftName = data.inspection.shift.name
+  const contentKey = JSON.stringify(alerts) + shiftName + windowHint
 
   return (
-    <section aria-label="廣播" className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 lg:flex-row lg:items-stretch">
-      <div className="flex shrink-0 items-center gap-1.5 px-1 text-sm font-semibold text-slate-700">
+    <section aria-label="廣播" className="flex items-center gap-3 overflow-hidden rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+      <div className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-slate-700">
         <svg viewBox="0 0 24 24" className="h-4 w-4 text-[#0086DB]" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
           <path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" />
           <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" strokeLinecap="round" />
         </svg>
         廣播
-      </div>
-
-      <Item tone={level3Tone} label={`Level 3・${windowHint}`}>
-        {level3Text}
-      </Item>
-
-      <Item tone={inspectionTone} label={`點檢・${inspection.shift.label}${inspection.shift.ended ? '（已結束）' : ''}`}>
-        已點檢 <b className="tabular-nums">{inspection.completed}</b> / {inspection.expected} 次
-        {inspection.warn > 0 && <span className="ml-1 font-semibold">・異常 {inspection.warn}</span>}
-      </Item>
-
-      <Item tone={escalatedStations.length ? 'bad' : 'good'} label={`站別等級・${windowHint}`}>
-        {escalatedStations.length === 0 ? (
-          '無站別等級提升'
-        ) : (
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-1" title={detail}>
-            <span>{escalatedStations.length} 站提升：</span>
-            {shown.map((e) => (
-              <span key={e.station} className="inline-flex items-center gap-1 whitespace-nowrap">
-                {e.station}
-                <LevelChange before={e.levelBefore} after={e.levelAfter} />
-              </span>
-            ))}
-            {escalatedStations.length > shown.length && <span>等</span>}
-          </span>
+        {alerts.length > 0 && (
+          <span className="rounded-full bg-red-600 px-1.5 text-xs tabular-nums text-white">{alerts.length}</span>
         )}
-      </Item>
+      </div>
+      {alerts.length === 0 ? (
+        <p className="min-w-0 truncate text-sm text-emerald-700">
+          目前沒有需要關注的項目（{data.inspection.shift.label}無漏點檢與異常、{windowHint}無新增 Level 3）
+        </p>
+      ) : (
+        <Marquee contentKey={contentKey}>
+          {alerts.map((a) => (
+            <AlertItem key={`${a.kind}:${a.equipmentCode}:${a.kpovNo}:${a.text}`} alert={a} shiftName={shiftName} windowHint={windowHint} />
+          ))}
+        </Marquee>
+      )}
     </section>
   )
 }

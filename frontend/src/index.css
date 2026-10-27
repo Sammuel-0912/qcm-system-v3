@@ -11,3 +11,27 @@ body,
 body {
   font-family: 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', system-ui, sans-serif;
 }
+
+/* 廣播跑馬燈（BroadcastBar）：內容複製兩份，捲完一份（-50%）剛好接上，看起來無限循環 */
+@keyframes qcm-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.qcm-marquee {
+  animation: qcm-marquee 30s linear infinite;
+}
+.qcm-marquee-viewport:hover .qcm-marquee {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qcm-marquee {
+    animation: none;
+  }
+  .qcm-marquee-viewport {
+    overflow-x: auto;
+  }
+}
