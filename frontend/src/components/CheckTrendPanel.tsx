@@ -19,14 +19,13 @@ import { formatLocalDateTime } from '../utils/datetime'
 const RANGES = [7, 14, 30] as const
 const WARN = '#d97706' // 異常：與看板的「異常」標籤同色系
 const MISSED = '#7c3aed' // 漏點檢
-const OK = '#cbd5e1' // 正常：淡灰，讓異常的扇形跳出來
 // 異常扇形：各點檢項目用不同的暖色，依異常次數由多到少
 const WARN_SLICES = ['#b91c1c', '#ea580c', '#f59e0b', '#e11d48', '#c2410c', '#facc15']
 const MAX_SLICES = WARN_SLICES.length
 
 /**
- * 點檢看板上方（spec §18）：左＝每日異常次數＋漏點檢數折線；右＝KPIV 點檢內容的異常分布圓餅（異常佔全部點檢的比例）。
- * 兩張圖共用期間（近 7／14／30 天），整條線、不吃下方紀錄的篩選。
+ * 點檢看板上方（spec §18）：左＝每日異常次數＋漏點檢數折線；右＝KPIV 點檢內容的異常分布圓餅（只畫有異常的項目）。
+ * 兩張圖共用期間（近 7／14／30 天），整條線、不吃下方紀錄的篩選；匯入的歷史點檢數量（spec §19）也算在內。
  */
 export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
   const [days, setDays] = useState<number>(14)
@@ -52,10 +51,10 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
   const slices = [
     ...shown.map((i, n) => ({ name: i.checkContent ?? '—', station: i.station, value: i.warn, color: WARN_SLICES[n] })),
     ...(rest.length ? [{ name: `其他 ${rest.length} 項`, station: null, value: rest.reduce((s, i) => s + i.warn, 0), color: WARN_SLICES[MAX_SLICES - 1] }] : []),
-    ...(data && data.totals.ok > 0 ? [{ name: '正常', station: null, value: data.totals.ok, color: OK }] : []),
   ]
   const total = data?.totals.total ?? 0
-  const warnRate = total ? (data!.totals.warn / total) * 100 : 0
+  const warnTotal = data?.totals.warn ?? 0
+  const warnRate = total ? (warnTotal / total) * 100 : 0
 
   return (
     <section className="space-y-3">
@@ -103,13 +102,16 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
           <p className="mt-1 text-xs text-slate-400">
             依班別的開班日統計（夜班跨午夜算開班當天）。漏點檢＝已結束的點檢時段沒有拍照點檢
             {data?.trackingFrom ? `，自第一筆拍照點檢（${formatLocalDateTime(data.trackingFrom).slice(0, 10)}）所在的班起算` : '；尚無拍照點檢時不計'}。
+            {data && data.totals.imported > 0 && `異常次數也算入匯入的歷史點檢（期間內 ${data.totals.imported} 筆）；漏點檢只看拍照點檢。`}
           </p>
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           <h3 className="mb-2 text-sm font-semibold text-slate-800">KPIV 點檢內容異常分布</h3>
           {total === 0 ? (
-            <p className="py-16 text-center text-sm text-slate-400">期間內沒有拍照點檢</p>
+            <p className="py-16 text-center text-sm text-slate-400">期間內沒有點檢</p>
+          ) : warnTotal === 0 ? (
+            <p className="py-16 text-center text-sm text-slate-400">期間內 {total} 次點檢都正常，沒有異常</p>
           ) : (
             <div className="flex flex-col items-center gap-3 2xl:flex-row 2xl:items-center">
               <div className="relative h-44 w-44 shrink-0">
@@ -120,12 +122,12 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
                         <Cell key={s.name} fill={s.color} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v: number) => [`${v} 次（${((v / total) * 100).toFixed(1)}%）`, '']} />
+                    <Tooltip formatter={(v: number) => [`${v} 次`, '']} />
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-2xl font-bold tabular-nums text-amber-700">{warnRate.toFixed(1)}%</span>
-                  <span className="text-xs text-slate-500">異常率</span>
+                  <span className="text-2xl font-bold tabular-nums text-amber-700">{warnTotal}</span>
+                  <span className="text-xs text-slate-500">異常次數</span>
                 </div>
               </div>
               <ul className="grid w-full min-w-0 flex-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2 2xl:grid-cols-1">
@@ -136,13 +138,12 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
                       <span className="line-clamp-2">{s.name}</span>
                       {s.station && <span className="block text-xs text-slate-400">{s.station}</span>}
                     </span>
-                    <span className="shrink-0 tabular-nums text-slate-600">
-                      {s.value}
-                      <span className="ml-1 text-xs text-slate-400">{((s.value / total) * 100).toFixed(1)}%</span>
-                    </span>
+                    <span className="shrink-0 tabular-nums text-slate-600">{s.value} 次</span>
                   </li>
                 ))}
-                <li className="pt-1 text-xs text-slate-400 sm:col-span-2 2xl:col-span-1">共 {total} 次點檢，異常 {data!.totals.warn} 次</li>
+                <li className="pt-1 text-xs text-slate-400 sm:col-span-2 2xl:col-span-1">
+                  共 {total} 次點檢{data!.totals.imported > 0 && `（含匯入 ${data!.totals.imported} 次）`}，異常 {warnTotal} 次・異常率 {warnRate.toFixed(1)}%
+                </li>
               </ul>
             </div>
           )}

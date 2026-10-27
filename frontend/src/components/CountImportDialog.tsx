@@ -8,7 +8,7 @@ const day = (iso: string) => formatLocalDateTime(iso).slice(0, 10)
 
 /**
  * 匯入歷史點檢數量（spec §19，最高權限管理者）：重新部署後補回點檢看板站別卡片的正常／異常次數。
- * 只累加卡片，不會出現在點檢紀錄、趨勢圖或點檢監控。
+ * 累加卡片與上方趨勢圖的異常次數／分布；不會出現在點檢紀錄或點檢監控。
  */
 export function CountImportDialog({ onClose }: { onClose: () => void }) {
   const { dataset } = useAuth()
@@ -64,8 +64,8 @@ export function CountImportDialog({ onClose }: { onClose: () => void }) {
 
         <div className="space-y-2 text-sm text-slate-600">
           <p>
-            重新部署後拍照點檢紀錄會從零開始；把舊系統匯出的點檢紀錄 Excel 匯入，即可補回<b>站別卡片的正常／異常次數</b>。
-            匯入的資料<b>不會</b>出現在下方點檢紀錄、趨勢圖或點檢監控。
+            重新部署後拍照點檢紀錄會從零開始；把舊系統匯出的點檢紀錄 Excel 匯入，即可補回<b>站別卡片的正常／異常次數</b>，上方趨勢圖的異常次數與異常分布也會一起算入。
+            匯入的資料<b>不會</b>出現在下方點檢紀錄或點檢監控，也不影響漏點檢數。
           </p>
           <p className="rounded-md bg-slate-50 px-3 py-2 text-xs">
             格式：直接使用點檢看板「匯出紀錄（含照片）」的檔案（舊版匯出也可）。系統依表頭找欄位，需要

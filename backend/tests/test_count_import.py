@@ -98,6 +98,15 @@ def test_count_import_adds_to_cards_only(app_ctx):
         assert card["okCount"] + card["warnCount"] == card["total"]
     # 點檢紀錄（raw data）不變
     assert su.get("/api/v1/check-inspections").json()["total"] == listed_before
+    # 趨勢圖的異常次數／分布也算入匯入的數量（期間內的部分），漏點檢不受影響
+    trend = su.get("/api/v1/check-inspections/trend", params={"days": 90}).json()
+    since = dt.datetime.fromisoformat(trend["since"])
+    rows = {(r.equipment_code, r.check_content, r.inspected_at): r for f in (V2_EXPORT, V3_EXPORT)
+            for r in parse_count_workbook(str(f)).rows}
+    rows.pop((first.equipment_code, first.check_content, first.inspected_at))  # 與拍照點檢重複、沒匯入
+    in_window = [r for r in rows.values() if r.inspected_at >= since]
+    assert trend["totals"]["imported"] == len(in_window)
+    assert sum(r["warn"] for r in trend["series"]) <= trend["totals"]["warn"]
 
     # 只有最高權限管理者能匯入／查看／清除
     su.post("/api/v1/users", json={"username": "wj1admin", "displayName": "WJ1", "password": "wj1-admin-pw",

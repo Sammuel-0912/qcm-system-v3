@@ -1294,7 +1294,8 @@ def check_inspection_trend(
     session: Session = Depends(get_session),
 ):
     """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
-    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days)
+    imported = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)).all()
+    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days, imported=imported)
 
 
 def _count_import_summary(session: Session, dataset: str) -> dict:

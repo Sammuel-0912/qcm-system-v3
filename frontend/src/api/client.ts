@@ -502,7 +502,7 @@ export type CheckTrend = {
     total: number
     warn: number
   }[]
-  totals: { total: number; ok: number; warn: number; missed: number }
+  totals: { total: number; ok: number; warn: number; missed: number; /** 期間內匯入的歷史點檢次數（spec §19） */ imported: number }
 }
 
 export type PhotoInspectionStat = {

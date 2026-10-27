@@ -166,7 +166,7 @@ export default function ArDashboardPage() {
       {isSuper && (
         <button
           onClick={() => setImporting(true)}
-          title="重新部署後補回站別卡片的正常／異常次數（只累加卡片，不會出現在點檢紀錄）"
+          title="重新部署後補回站別卡片的正常／異常次數與趨勢圖的異常（不會出現在點檢紀錄）"
           className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
         >
           匯入歷史點檢數量
@@ -347,6 +347,7 @@ export default function ArDashboardPage() {
         <CountImportDialog
           onClose={() => {
             setImporting(false)
+            setReloadKey((k) => k + 1) // 趨勢圖也算入匯入的數量
             void load()
           }}
         />
