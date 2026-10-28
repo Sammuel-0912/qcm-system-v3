@@ -101,7 +101,7 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
           </div>
           <p className="mt-1 text-xs text-slate-400">
             依班別的開班日統計（夜班跨午夜算開班當天）。漏點檢＝已結束的點檢時段沒有點檢
-            {data?.trackingFrom ? `，自第一筆拍照點檢（${formatLocalDateTime(data.trackingFrom).slice(0, 10)}）所在的班起算` : '；尚無拍照點檢時不計'}。
+            {data?.trackingFrom ? `，自 ${formatLocalDateTime(data.trackingFrom).slice(0, 10)} 起算（之前為試運行）；星期日與整班沒有任何點檢的班別不算` : '；尚無拍照點檢時不計'}。
             {data && data.totals.imported > 0 && `異常次數與漏點檢也算入匯入的歷史點檢（期間內 ${data.totals.imported} 筆）。`}
           </p>
         </div>

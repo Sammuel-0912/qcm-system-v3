@@ -4,10 +4,19 @@ from __future__ import annotations
 import datetime as dt
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.check_trend import check_trend
 from tests.test_rbac import ADMIN, V1026, _import, app_ctx, needs_data  # noqa: F401  (app_ctx 為 fixture)
 
 SITE = dt.timezone(dt.timedelta(hours=8))
+
+
+@pytest.fixture(autouse=True)
+def _no_trial_or_off_days(monkeypatch):
+    """既有案例用 10/24–26（含週日 10/25）：關掉 v2.12 的起算日與不生產星期，只測時段邏輯。"""
+    monkeypatch.setattr("app.services.check_trend.CHECK_MISSED_FROM", dt.date(2026, 1, 1))
+    monkeypatch.setattr("app.services.check_trend.CHECK_OFF_WEEKDAYS", frozenset())
 
 
 def _site(day: int, hour: int) -> dt.datetime:
@@ -84,3 +93,26 @@ def test_trend_includes_imported_counts_and_fills_missed_slots():
     by_code = {i["equipmentCode"]: i for i in out["items"]}
     assert (by_code["A"]["total"], by_code["A"]["warn"], by_code["A"]["kpovNo"], by_code["A"]["station"]) == (2, 1, "K1", "站A")
     assert (by_code["Z"]["warn"], by_code["Z"]["station"], by_code["Z"]["kpovNo"]) == (1, "舊站Z", None)
+
+
+def test_missed_skips_trial_period_sundays_and_shifts_without_any_record(monkeypatch):
+    """v2.12：起算日前（試運行）、週日、整班沒有任何點檢的班別都不算漏點檢。"""
+    monkeypatch.setattr("app.services.check_trend.CHECK_MISSED_FROM", dt.date(2026, 10, 24))
+    monkeypatch.setattr("app.services.check_trend.CHECK_OFF_WEEKDAYS", frozenset({6}))
+    items = [_item("A", 10), _item("B", 5)]
+    records = [
+        _rec("A", _site(23, 9)),   # 第一筆拍照點檢在試運行期間
+        _rec("A", _site(24, 9)),   # 10/24（六）日班有點；夜班沒有任何紀錄
+        _rec("A", _site(25, 9)),   # 10/25（日）不生產：有紀錄也不算漏點檢
+        _rec("B", _site(26, 21)),  # 10/26（一）只有夜班有點
+    ]
+    imported = [SimpleNamespace(equipment_code="Z", check_content="舊內容", station=None, inspected_at=_site(27, 9), status="ok")]
+    out = check_trend(items, records, days=5, now=_site(27, 12), imported=imported)
+    rows = {r["date"]: (r["missed"], r["expected"]) for r in out["series"]}
+    assert rows["2026-10-23"] == (0, 0)  # 起算日前
+    assert rows["2026-10-24"] == (2, 3)  # 只算日班：A 有點、B 兩格漏
+    assert rows["2026-10-25"] == (0, 0)  # 週日
+    assert rows["2026-10-26"] == (2, 3)  # 只算夜班：B 點了一格、另一格漏，A 漏
+    # 10/27 日班只有一筆對不到項目的匯入，仍算有開線；進行中的班只算已結束的格（B 08–13 尚未結束）
+    assert rows["2026-10-27"] == (0, 3)
+    assert out["trackingFrom"] == _site(24, 8).astimezone(dt.timezone.utc).isoformat()

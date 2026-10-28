@@ -3,6 +3,8 @@
 - 每日異常次數：拍照點檢結果為異常的次數，依所屬班別的開班日（夜班跨午夜記為開班當天）。
 - 每日漏點檢數：各點檢項目在該日各班的點檢時段（與點檢監控相同，見 check_monitor._slots）中，
   時段已結束卻沒有點檢的格數。只從這條線第一筆拍照點檢所在的班開始算，避免系統啟用前的日子全算漏點檢。
+  v2.12：另有起算日（CHECK_MISSED_FROM，之前為試運行）；不生產的星期（CHECK_OFF_WEEKDAYS，預設週日）
+  與整班沒有任何點檢紀錄的班別（視為沒開線）都不算漏點檢。
 - KPIV 點檢內容分布：期間內各點檢項目的異常次數與佔全部點檢的比例（前端只畫有異常的項目）。
 - 最高權限管理者「匯入歷史點檢數量」的資料（spec §19）也算進每日異常次數與分布；
   v2.11 起也算進點檢時段：時段內有匯入的點檢就不算漏點檢（依設備代碼＋點檢內容對回點檢項目，對不到的不算）。
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from ..config import CHECK_SHIFTS, SITE_UTC_OFFSET_HOURS
+from ..config import CHECK_MISSED_FROM, CHECK_OFF_WEEKDAYS, CHECK_SHIFTS, SITE_UTC_OFFSET_HOURS
 from ..models import CheckCountImport, CheckPhotoInspection, FactCheckItem
 from .check_monitor import SLOT_MISSED, _slots, current_shift, item_key, shift_of, utc
 
@@ -56,8 +58,12 @@ def check_trend(
     by_item: dict[tuple, list] = {}
     for r in sorted([*records, *imported], key=lambda r: utc(r.inspected_at), reverse=True):
         by_item.setdefault(_key(r), []).append(r)
-    # 漏點檢從第一筆拍照點檢所在的班開始算
+    # 漏點檢從第一筆拍照點檢所在的班開始算，且不早於起算日
     tracking_from = current_shift(utc(records[-1].inspected_at))["start"] if records else None
+    if tracking_from is not None:
+        tracking_from = max(tracking_from, _shifts_of_day(CHECK_MISSED_FROM)[0]["start"])
+    # 有點檢紀錄（拍照或匯入，不限目前點檢項目）的班別；整班都沒有紀錄視為沒開線
+    worked_shifts = {current_shift(utc(r.inspected_at))["start"] for r in [*records, *imported]}
 
     series = []
     for offset in range(days):
@@ -65,6 +71,8 @@ def check_trend(
         missed = expected = 0
         for shift in _shifts_of_day(day):
             if shift["start"] > now or tracking_from is None or shift["start"] < tracking_from:
+                continue
+            if day.weekday() in CHECK_OFF_WEEKDAYS or shift["start"] not in worked_shifts:
                 continue
             for item in items:
                 interval = dt.timedelta(hours=float(item.interval_hours or 2))

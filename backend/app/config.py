@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 from pathlib import Path
 
@@ -96,3 +97,6 @@ AR_UPLOAD_URL_PREFIX = "/api/ar/uploads"
 SITE_UTC_OFFSET_HOURS = float(os.getenv("QCM_SITE_UTC_OFFSET", "8"))
 # (班別名稱, 開始時, 時長小時)。夜班跨午夜。兩班之間的空檔顯示剛結束的那一班。
 CHECK_SHIFTS: tuple[tuple[str, int, int], ...] = (("日班", 8, 10), ("夜班", 20, 10))
+# 點檢趨勢的漏點檢（spec §18，v2.12）：起算日（之前為試運行，不算漏點檢）與不生產的星期（0＝週一 … 6＝週日，逗號分隔）
+CHECK_MISSED_FROM = dt.date.fromisoformat(os.getenv("QCM_CHECK_MISSED_FROM", "2026-10-27"))
+CHECK_OFF_WEEKDAYS = frozenset(int(d) for d in os.getenv("QCM_CHECK_OFF_WEEKDAYS", "6").split(",") if d.strip())
