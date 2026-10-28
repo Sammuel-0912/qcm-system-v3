@@ -529,6 +529,8 @@ export type CountImportResult = {
   addedOk: number
   addedWarn: number
   duplicates: number
+  /** 勾選覆蓋時清掉的先前匯入筆數 */
+  replaced: number
   invalid: number
   invalidReasons: string[]
   stations: { equipmentCode: string; station: string; okCount: number; warnCount: number }[]
@@ -727,9 +729,10 @@ export const api = {
   resetPassword: (id: number, password: string) =>
     send<AuthUser>('POST', `/users/${id}/reset-password`, { password }, '重設密碼失敗'),
   countImportSummary: () => get<CountImportSummary>('/check-inspections/count-import'),
-  async countImport(file: File): Promise<CountImportResult> {
+  async countImport(file: File, replace = false): Promise<CountImportResult> {
     const form = new FormData()
     form.append('file', file)
+    form.append('replace', String(replace))
     const res = await apiFetch(`${BASE}/check-inspections/count-import`, { method: 'POST', body: form })
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     if (!res.ok) throw new ApiError(typeof body.detail === 'string' ? body.detail : '匯入失敗')

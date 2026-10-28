@@ -17,6 +17,7 @@ export function CountImportDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
+  const [replace, setReplace] = useState(false)
 
   useEffect(() => {
     api.countImportSummary().then(setSummary).catch(() => setSummary(null))
@@ -27,7 +28,7 @@ export function CountImportDialog({ onClose }: { onClose: () => void }) {
     setError(null)
     setResult(null)
     try {
-      const r = await api.countImport(file)
+      const r = await api.countImport(file, replace)
       setResult(r)
       setSummary(r.summary)
     } catch (err) {
@@ -77,6 +78,20 @@ export function CountImportDialog({ onClose }: { onClose: () => void }) {
           </p>
         </div>
 
+        <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <input
+            type="checkbox"
+            checked={replace}
+            disabled={busy}
+            onChange={(e) => setReplace(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <b>覆蓋</b>：先清除這條線已匯入的 {summary?.total ?? 0} 次，再以這份檔案為準（拍照點檢紀錄不受影響）。
+            不勾選則與已匯入的累加，重複的略過。
+          </span>
+        </label>
+
         <input
           type="file"
           accept=".xlsx,.xlsm"
@@ -97,6 +112,7 @@ export function CountImportDialog({ onClose }: { onClose: () => void }) {
               <b>{result.source}</b>：新增 <b className="tabular-nums">{result.added}</b> 筆（正常 {result.addedOk}・異常{' '}
               {result.addedWarn}）
               {result.duplicates > 0 && <span className="text-slate-600">，重複略過 {result.duplicates} 筆</span>}
+              {result.replaced > 0 && <span className="text-slate-600">；已覆蓋先前匯入的 {result.replaced} 次</span>}
               {result.invalid > 0 && <span className="text-amber-700">，無法辨識略過 {result.invalid} 筆</span>}
             </p>
             {result.invalidReasons.length > 0 && (

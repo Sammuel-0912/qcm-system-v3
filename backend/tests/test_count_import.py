@@ -72,12 +72,19 @@ def test_count_import_adds_to_cards_only(app_ctx):
 
     su = app_ctx(ADMIN)
     assert _import(su, V1026, "WJ1-DCS-PM1-數據庫-1026.xlsx").status_code == 200
-    # 系統內已有一筆與 v3 檔案第一列相同的拍照點檢：匯入時要略過
-    first = parse_count_workbook(str(V3_EXPORT)).rows[0]
+    # 系統內已有與 v3 檔案相同的拍照點檢：
+    # - 在目前點檢項目底下（卡片有算到）的要略過
+    # - 點檢內容已改版、卡片沒算到的（這裡用不存在的 KPOV 模擬）照樣匯入，卡片才不會少算（v2.9）
+    items = {(i["equipmentCode"], (i["checkContent"] or "").strip()): i["kpovNo"]
+             for i in su.get("/api/v1/check-monitor").json()["items"]}
+    v3_rows = parse_count_workbook(str(V3_EXPORT)).rows
+    first = next(r for r in v3_rows if (r.equipment_code, r.check_content) in items)
+    hidden = next(r for r in v3_rows if r is not first)
     with SessionLocal() as s:
-        s.add(CheckPhotoInspection(equipment_code=first.equipment_code, kpov_no="K00026", check_content=first.check_content,
-                                   status=first.status, photo_url="/api/ar/uploads/checks/x.png",
-                                   inspected_at=first.inspected_at, dataset="WJ1-DCS-PM1"))
+        for row, kpov in ((first, items[(first.equipment_code, first.check_content)]), (hidden, "K99999")):
+            s.add(CheckPhotoInspection(equipment_code=row.equipment_code, kpov_no=kpov, check_content=row.check_content,
+                                       status=row.status, photo_url="/api/ar/uploads/checks/x.png",
+                                       inspected_at=row.inspected_at, dataset="WJ1-DCS-PM1"))
         s.commit()
     before = {c["equipmentCode"]: c for c in su.get("/api/v1/check-inspections/stats").json()}
     listed_before = su.get("/api/v1/check-inspections").json()["total"]
@@ -131,3 +138,29 @@ def test_count_import_rejects_bad_files(app_ctx):
     assert bad.status_code == 422
     junk = su.post("/api/v1/check-inspections/count-import", files={"file": ("a.xlsx", io.BytesIO(b"not excel"), XLSX)})
     assert junk.status_code == 422 and "無法讀取" in junk.json()["detail"]
+
+
+@needs_data
+@needs_exports
+def test_count_import_replace_overwrites_previous_imports(app_ctx):
+    """覆蓋（v2.10）：先清掉這條線先前匯入的數量，再以這份檔案為準；只動這條線。"""
+    su = app_ctx(ADMIN)
+    assert _import(su, V1026, "WJ1-DCS-PM1-數據庫-1026.xlsx").status_code == 200
+    _upload(su, V2_EXPORT)
+    _upload(su, V3_EXPORT)
+    assert su.get("/api/v1/check-inspections/count-import").json()["total"] == 190
+
+    with V3_EXPORT.open("rb") as fh:
+        r = su.post("/api/v1/check-inspections/count-import", files={"file": (V3_EXPORT.name, fh, XLSX)},
+                    data={"replace": "true"}, headers={"X-QCM-Dataset": "WJ1-DCS-PM1"}).json()
+    assert (r["replaced"], r["added"], r["duplicates"]) == (190, 91, 0)
+    assert r["summary"]["total"] == 91 and [f["source"] for f in r["summary"]["files"]] == [V3_EXPORT.name]
+    assert sum(c["importedCount"] for c in su.get("/api/v1/check-inspections/stats").json()) == 91
+
+    # 檔案無法讀取時不清除
+    bad = su.post("/api/v1/check-inspections/count-import", files={"file": ("a.xlsx", io.BytesIO(b"x"), XLSX)},
+                  data={"replace": "true"})
+    assert bad.status_code == 422
+    assert su.get("/api/v1/check-inspections/count-import").json()["total"] == 91
+    # 不勾覆蓋時照舊累加
+    assert _upload(su, V2_EXPORT).json()["replaced"] == 0

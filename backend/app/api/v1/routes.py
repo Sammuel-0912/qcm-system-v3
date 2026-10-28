@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ...config import SITE_UTC_OFFSET_HOURS
@@ -1353,6 +1353,7 @@ def count_import_summary(
 @router.post("/check-inspections/count-import")
 def import_check_counts(
     file: UploadFile = File(...),
+    replace: bool = Form(False),
     actor: User = Depends(require_super),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
@@ -1360,6 +1361,8 @@ def import_check_counts(
     """匯入歷史點檢數量（spec §19，最高權限管理者）：只累加點檢看板卡片的正常／異常次數，不建立點檢紀錄。
 
     以（設備代碼, 點檢內容, 點檢時間）去重：已匯入過、或系統內已有同一筆拍照點檢的都略過。
+    拍照點檢只比對卡片有算到的（目前點檢項目底下的，見 _photo_records）：點檢內容改版後舊文字的紀錄不會出現在卡片，
+    匯入時要能補回，否則卡片會少算（v2.9）。
     """
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=422, detail="請上傳 .xlsx 檔")
@@ -1377,12 +1380,18 @@ def import_check_counts(
     def key(code, content, at):
         return (code, (content or "").strip(), utc(at).replace(microsecond=0))
 
+    # 覆蓋（v2.10）：檔案解析成功後，先清掉這條線先前匯入的數量，再以這份檔案為準；同一交易，失敗就整個不生效
+    replaced = 0
+    if replace:
+        replaced = session.execute(
+            delete(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)
+        ).rowcount
     existing = {
         key(r.equipment_code, r.check_content, r.inspected_at)
         for r in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset))
     } | {
         key(r.equipment_code, r.check_content, r.inspected_at)
-        for r in session.scalars(select(CheckPhotoInspection).where(CheckPhotoInspection.dataset == scope.dataset))
+        for r in _photo_records(session, scope.batch)
     }
     names = _station_names(session, scope.batch)
     source = os.path.basename(file.filename)
@@ -1416,6 +1425,7 @@ def import_check_counts(
         "addedOk": added["ok"],
         "addedWarn": added["warn"],
         "duplicates": duplicates,
+        "replaced": replaced,
         "invalid": parsed.invalid,
         "invalidReasons": parsed.reasons,
         "stations": sorted(stations.values(), key=lambda s: s["station"]),
