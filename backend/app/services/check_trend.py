@@ -5,7 +5,8 @@
   時段已結束卻沒有點檢的格數。只從這條線第一筆拍照點檢所在的班開始算，避免系統啟用前的日子全算漏點檢。
 - KPIV 點檢內容分布：期間內各點檢項目的異常次數與佔全部點檢的比例（前端只畫有異常的項目）。
 - 最高權限管理者「匯入歷史點檢數量」的資料（spec §19）也算進每日異常次數與分布；
-  漏點檢只依拍照點檢計算（匯入的是補回的次數，不代表當時各時段的點檢狀況）。
+  v2.11 起也算進點檢時段：時段內有匯入的點檢就不算漏點檢（依設備代碼＋點檢內容對回點檢項目，對不到的不算）。
+  起算點仍是第一筆拍照點檢所在的班，匯入的舊資料不會讓起算點提前。
 """
 from __future__ import annotations
 
@@ -41,9 +42,20 @@ def check_trend(
     since = _shifts_of_day(first_day)[0]["start"]
 
     records = sorted(records, key=lambda r: utc(r.inspected_at), reverse=True)
-    by_item: dict[tuple, list[CheckPhotoInspection]] = {}
-    for r in records:
-        by_item.setdefault(item_key(r.equipment_code, r.kpov_no, r.check_content), []).append(r)
+    # 匯入列沒有 KPOV 編號：依設備代碼＋點檢內容對回目前的點檢項目，對不到的另列一項
+    by_content = {(i.equipment_code or "", (i.check_content or "").strip()): i for i in items}
+
+    def _key(r) -> tuple:
+        if getattr(r, "kpov_no", None) is None:
+            item = by_content.get((r.equipment_code or "", (r.check_content or "").strip()))
+            if item is not None:
+                return item_key(item.equipment_code, item.kpov_no, item.check_content)
+        return item_key(r.equipment_code, getattr(r, "kpov_no", None), r.check_content)
+
+    # 點檢時段：拍照點檢＋匯入的點檢（_slots 需要新到舊）
+    by_item: dict[tuple, list] = {}
+    for r in sorted([*records, *imported], key=lambda r: utc(r.inspected_at), reverse=True):
+        by_item.setdefault(_key(r), []).append(r)
     # 漏點檢從第一筆拍照點檢所在的班開始算
     tracking_from = current_shift(utc(records[-1].inspected_at))["start"] if records else None
 
@@ -63,16 +75,6 @@ def check_trend(
         series.append({"date": day.isoformat(), "warn": 0, "inspected": 0, "missed": missed, "expected": expected})
 
     index = {row["date"]: row for row in series}
-    # 匯入列沒有 KPOV 編號：依設備代碼＋點檢內容對回目前的點檢項目，對不到的另列一項
-    by_content = {(i.equipment_code or "", (i.check_content or "").strip()): i for i in items}
-
-    def _key(r) -> tuple:
-        if getattr(r, "kpov_no", None) is None:
-            item = by_content.get((r.equipment_code or "", (r.check_content or "").strip()))
-            if item is not None:
-                return item_key(item.equipment_code, item.kpov_no, item.check_content)
-        return item_key(r.equipment_code, getattr(r, "kpov_no", None), r.check_content)
-
     in_range = [r for r in [*records, *imported] if since <= utc(r.inspected_at) <= now]
     for r in in_range:
         row = index.get(shift_of(utc(r.inspected_at))["date"].isoformat())

@@ -60,23 +60,27 @@ def test_trend_api(app_ctx):
     assert su.get("/api/v1/check-inspections/trend", params={"days": 0}).status_code == 422
 
 
-def test_trend_includes_imported_counts_but_not_missed():
+def test_trend_includes_imported_counts_and_fills_missed_slots():
     # 匯入列（spec §19）沒有 KPOV 編號：依設備代碼＋點檢內容對回點檢項目；對不到的另列一項
-    items = [_item("A", 10)]
+    items = [_item("A", 10), _item("B", 5)]
     records = [_rec("A", _site(25, 9))]
     imported = [
         SimpleNamespace(equipment_code="A", check_content="點檢A", station="舊站名", inspected_at=_site(25, 10), status="warn"),
+        SimpleNamespace(equipment_code="B", check_content="點檢B", station=None, inspected_at=_site(25, 14), status="ok"),
         SimpleNamespace(equipment_code="Z", check_content="舊內容", station="舊站Z", inspected_at=_site(24, 10), status="warn"),
         SimpleNamespace(equipment_code="A", check_content="點檢A", station=None, inspected_at=_site(1, 10), status="warn"),  # 期間外
     ]
     base = check_trend(items, records, days=3, now=_site(26, 12))
     out = check_trend(items, records, days=3, now=_site(26, 12), imported=imported)
     rows = {r["date"]: r for r in out["series"]}
-    assert (rows["2026-10-25"]["warn"], rows["2026-10-25"]["inspected"]) == (1, 2)
-    assert (rows["2026-10-24"]["warn"], rows["2026-10-24"]["missed"]) == (1, 0)
-    # 漏點檢只看拍照點檢
-    assert [r["missed"] for r in out["series"]] == [r["missed"] for r in base["series"]]
-    assert out["totals"] == {**base["totals"], "total": 3, "warn": 2, "ok": 1, "imported": 2}
+    base_rows = {r["date"]: r for r in base["series"]}
+    assert (rows["2026-10-25"]["warn"], rows["2026-10-25"]["inspected"]) == (1, 3)
+    # 10/24 在第一筆拍照點檢之前：匯入的點檢算異常，但不會讓漏點檢提前起算
+    assert (rows["2026-10-24"]["warn"], rows["2026-10-24"]["missed"], rows["2026-10-24"]["expected"]) == (1, 0, 0)
+    # v2.11：B 在 10/25 日班第二格（13–18 時）有匯入的點檢，那格不算漏點檢
+    assert rows["2026-10-25"]["missed"] == base_rows["2026-10-25"]["missed"] - 1
+    assert rows["2026-10-26"] == {**base_rows["2026-10-26"]}
+    assert out["totals"] == {"total": 4, "ok": 2, "warn": 2, "missed": base["totals"]["missed"] - 1, "imported": 3}
     by_code = {i["equipmentCode"]: i for i in out["items"]}
     assert (by_code["A"]["total"], by_code["A"]["warn"], by_code["A"]["kpovNo"], by_code["A"]["station"]) == (2, 1, "K1", "站A")
     assert (by_code["Z"]["warn"], by_code["Z"]["station"], by_code["Z"]["kpovNo"]) == (1, "舊站Z", None)
