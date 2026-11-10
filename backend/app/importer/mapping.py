@@ -17,6 +17,19 @@ def normalize(value) -> str:
     return _NOISE.sub(" ", str(value)).strip()
 
 
+# 簡體 → 繁體（只涵蓋表頭與工作表名稱會出現的字）。來源檔的表頭有時整列被轉成簡體或繁體
+#（1106 版：KPOV-by 站 變成「站别／设备ID／小y侦测度」，高風險項點檢反而變成「KPOV 編號」），
+# 比對時兩邊都轉成繁體，兩種寫法都對得到。
+_SIMPLIFIED = "号编别设备侦测属级类制单体码报护库录换时间内现务认组产线区场处门应对头选项种问题质点检频观实际业员维责负动态机厂车长变后发结论总计记档载输适关联标准确签审订启续损坏误阶统据灯显视觉纠摄败异样碍障缺陷图码诉销营户户运输场评价议确认响"
+_TRADITIONAL = "號編別設備偵測屬級類製單體碼報護庫錄換時間內現務認組產線區場處門應對頭選項種問題質點檢頻觀實際業員維責負動態機廠車長變後發結論總計記檔載輸適關聯標準確簽審訂啟續損壞誤階統據燈顯視覺糾攝敗異樣礙障缺陷圖碼訴銷營戶戶運輸場評價議確認響"
+_TO_TRADITIONAL = str.maketrans(dict(zip(_SIMPLIFIED, _TRADITIONAL)))
+
+
+def header_key(value) -> str:
+    """表頭比對用的鍵：normalize 後轉繁體並去掉所有空白（「KPOV 编号」＝「KPOV編號」）。只用於比對，不改資料。"""
+    return re.sub(r"\s+", "", normalize(value).translate(_TO_TRADITIONAL))
+
+
 # 工作表角色 -> 名稱比對前綴（皆以 normalize 後比對）
 SHEET_PREFIXES: dict[str, tuple[str, ...]] = {
     # 新版（1008）工作表名稱為「KPOV-by 站 」，沒有「库/庫」

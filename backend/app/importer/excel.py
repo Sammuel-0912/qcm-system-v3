@@ -140,9 +140,9 @@ def _coerce(field_name: str, value: Any) -> Any:
 def _find_sheet(workbook, role: str):
     prefixes = M.SHEET_PREFIXES[role]
     for sheet in workbook.worksheets:
-        name = M.normalize(sheet.title)
+        name = M.header_key(sheet.title)
         for prefix in prefixes:
-            if name.startswith(M.normalize(prefix)):
+            if name.startswith(M.header_key(prefix)):
                 return sheet
     return None
 
@@ -153,12 +153,15 @@ def _match_header(header_name: str, column_map: dict[str, str]) -> str | None:
     來源檔的錯誤碼庫表頭是中英雙行（例：`設備錯誤碼_x000D_\\nMachine error code`），
     normalize 後成為「設備錯誤碼 Machine error code」，無法完全比對，因此採前綴比對。
     取「最長」匹配，避免「設備型號描述」被短規格「設備型號」吃掉。
+    兩邊都以 header_key 比對：簡繁體、空白不同（1106 版表頭整列變簡體）也對得到。
     """
+    name = M.header_key(header_name)
     best: str | None = None
+    best_len = -1
     for spec in column_map:
-        if header_name == spec or header_name.startswith(spec):
-            if best is None or len(spec) > len(best):
-                best = spec
+        key = M.header_key(spec)
+        if name.startswith(key) and len(key) > best_len:
+            best, best_len = spec, len(key)
     return best
 
 
@@ -450,20 +453,19 @@ def parse_equipment_reference(sheet) -> list[dict]:
     rows = list(sheet.iter_rows(values_only=True))
     blocks: list[dict] = []  # {start_row, name_col, code_col, station_col, attr_col}
     for r, row in enumerate(rows[:_HEADER_SCAN_ROWS]):
-        header = [M.normalize(cell) for cell in row]
+        header = [M.header_key(cell) for cell in row]
+        codes = {M.header_key(code) for code in M.EQUIPMENT_REF_CODES}
         for c, name in enumerate(header):
-            if name != M.EQUIPMENT_REF_NAME:
+            if name != M.header_key(M.EQUIPMENT_REF_NAME):
                 continue
             if any(b["name_col"] == c for b in blocks):
                 continue
-            code_col = next(
-                (i for i in range(c + 1, len(header)) if header[i] in M.EQUIPMENT_REF_CODES), None
-            )
+            code_col = next((i for i in range(c + 1, len(header)) if header[i] in codes), None)
             if code_col is None:
                 continue
             left = header[:c]
-            station_col = max((i for i, h in enumerate(left) if h == "站別"), default=None)
-            attr_col = max((i for i, h in enumerate(left) if h == "屬性"), default=None)
+            station_col = max((i for i, h in enumerate(left) if h == M.header_key("站別")), default=None)
+            attr_col = max((i for i, h in enumerate(left) if h == M.header_key("屬性")), default=None)
             blocks.append(
                 {"start": r + 1, "name_col": c, "code_col": code_col, "station_col": station_col, "attr_col": attr_col}
             )
@@ -761,10 +763,10 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     _import_complaints(session, workbook, batch, report, previous, carry)
 
     # 7) 維修紀錄（只讀有表頭的欄位，字典欄位已在步驟 1 分開處理）
-    header_text = " ".join(
-        M.normalize(c) for row in repair_sheet.iter_rows(max_row=_HEADER_SCAN_ROWS, values_only=True) for c in row
+    header_text = "".join(
+        M.header_key(c) for row in repair_sheet.iter_rows(max_row=_HEADER_SCAN_ROWS, values_only=True) for c in row
     )
-    legacy = M.REPAIR_V1_MARKER in header_text
+    legacy = M.header_key(M.REPAIR_V1_MARKER) in header_text
     repair_map = M.REPAIR_COLUMNS if legacy else M.REPAIR_COLUMNS_V2
     idx, rows, _ = _read_table(repair_sheet, repair_map, M.REPAIR_REQUIRED, "repair")
     eight_d = _repair_eight_d_index(repair_sheet, report)
@@ -1068,8 +1070,8 @@ def _header_mismatches(head: list[tuple], checks: dict[str, str], offset: int = 
     wrong = []
     for letter, label in checks.items():
         col = column_index_from_string(letter) - 1 + offset
-        texts = [M.normalize(r[col]) if col < len(r) else "" for r in head]
-        if not any(label in t.replace(" ", "") for t in texts):
+        texts = [M.header_key(r[col]) if col < len(r) else "" for r in head]
+        if not any(M.header_key(label) in t for t in texts):
             wrong.append(f"{M.shift_letter(letter, offset)} 欄應為「{label}」")
     return wrong
 
@@ -1077,9 +1079,10 @@ def _header_mismatches(head: list[tuple], checks: dict[str, str], offset: int = 
 def _named_columns(head: list[tuple], names: dict[str, str]) -> dict[str, int]:
     """在表頭列中以完全相同的文字找欄位，回傳 {欄位: 索引}；同名取第一個。"""
     found: dict[str, int] = {}
+    keyed = {M.header_key(name): field for name, field in names.items()}
     for row in head:
         for i, cell in enumerate(row):
-            field = names.get(M.normalize(cell))
+            field = keyed.get(M.header_key(cell))
             if field and field not in found:
                 found[field] = i
     return found
