@@ -24,7 +24,7 @@ VM 需求：Linux x86_64、Docker Engine 24 以上（含 `docker compose` 外掛
 
 ```bash
 cd qcm-system-v3
-git checkout feat/rbac                     # 要部署的分支：登入／權限、廣播、篩選與逾期、點檢趨勢都在這裡（尚未合併到 main）
+git checkout main                          # 要部署的分支（feat/rbac 已合併到 main）
 git pull
 git log --oneline -1                       # 記下部署的版本，之後回報問題時用
 
@@ -63,9 +63,14 @@ scp qcm-images.tar.gz docker-compose.yml .env.example user@<VM IP>:~/qcm/
 
 ### A-3. VM：載入並啟動
 
+VM 不能用 `apt`／`yum` 線上安裝，請先確認已經裝好 Docker；沒有的話，要事先準備對應作業系統版本的 Docker 離線安裝包（`.deb`／`.rpm`）帶過去。
+
 ```bash
+docker version && docker compose version   # 兩個都要有輸出
+
 cd ~/qcm
 gunzip -c qcm-images.tar.gz | docker load
+docker images | grep -E "qcm-api|qcm-web|postgres"   # 三個都要在；缺 postgres 時 db 會因為抓不到映像而起不來
 
 cp .env.example .env
 vi .env                                    # 必改 POSTGRES_PASSWORD、QCM_JWT_SECRET、QCM_ADMIN_PASSWORD，視需要改 WEB_PORT
@@ -101,7 +106,7 @@ docker image prune -f                      # 清掉舊版映像
 ## 方式 B：VM 直接建置（VM 能連外網時）
 
 ```bash
-git clone -b feat/rbac https://github.com/Sammuel-0912/qcm-system-v3.git qcm   # private repo，需要 GitHub 帳號或 token
+git clone -b main https://github.com/Sammuel-0912/qcm-system-v3.git qcm   # private repo，需要 GitHub 帳號或 token
 cd qcm
 cp .env.example .env && vi .env            # 必改 POSTGRES_PASSWORD、QCM_JWT_SECRET、QCM_ADMIN_PASSWORD
 docker compose up -d --build
@@ -132,8 +137,8 @@ docker compose up -d --build
 部署完成的快速檢查（在 VM 上）：
 
 ```bash
-curl -s http://localhost:8080/health                       # {"status":"ok"}
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/v1/filters   # 401＝登入保護正常
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/v1/filters   # 401＝nginx 轉發與登入保護都正常
+docker compose exec -T api python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health').read().decode())"   # {"status":"ok"}
 docker compose logs api | grep -E "已建立最高權限管理者|未設定 QCM_JWT_SECRET|尚無最高權限管理者"
 ```
 

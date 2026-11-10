@@ -1,0 +1,4 @@
+# 建置產物與下載的工具（build.ps1）
+vendor/
+build/
+output/

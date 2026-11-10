@@ -1,0 +1,20 @@
+<!-- WinSW 服務設定：檔名須與 qcm-service.exe（WinSW-x64.exe 改名）相同，放在同一個資料夾 -->
+<service>
+  <id>QCM</id>
+  <name>QCM 品控力風險智控平台</name>
+  <description>QCM 後端與網頁。設定與資料在 %ProgramData%\QCM。</description>
+  <executable>%BASE%\python\python.exe</executable>
+  <arguments>"%BASE%\launcher.py"</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+  <env name="PYTHONUTF8" value="1"/>
+  <logpath>%ProgramData%\QCM\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,7 +14,7 @@ from .api.auth_routes import ensure_bootstrap_admin
 from .api.auth_routes import router as auth_router
 from .api.deps import current_user
 from .api.v1.routes import router
-from .config import AR_UPLOAD_URL_PREFIX
+from .config import AR_UPLOAD_URL_PREFIX, STATIC_DIR
 from .db import SessionLocal, get_session, init_db
 from .models import CheckPhotoInspection, User
 from .services.auth import ROLE_SUPER, can_view_plant, dataset_plant
@@ -61,3 +65,28 @@ def _startup() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+def mount_frontend(target: FastAPI, directory: str | Path) -> None:
+    """由後端直接提供前端（Windows 安裝版沒有 nginx）。必須在所有 API 路由之後註冊。
+
+    檔案存在就回檔案，其餘路徑一律回 index.html，交給前端路由（BrowserRouter）。
+    /api/ 底下找不到的路徑仍回 404，不會被當成網頁。
+    """
+    root = Path(directory).resolve()
+    index = root / "index.html"
+    # 檔名帶內容 hash，可以長期快取；index.html 每次都要回源，才拿得到新版的 asset 檔名
+    target.mount("/assets", StaticFiles(directory=root / "assets"), name="frontend-assets")
+
+    @target.get("/{path:path}", include_in_schema=False)
+    def frontend(path: str) -> FileResponse:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        file = (root / path).resolve()
+        if path and file.is_file() and root in file.parents:
+            return FileResponse(file)
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
+
+if STATIC_DIR:
+    mount_frontend(app, STATIC_DIR)

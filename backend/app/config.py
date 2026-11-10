@@ -88,6 +88,9 @@ DETECTION_THRESHOLD = 5
 AR_UPLOAD_DIR = DATA_DIR / "ar-uploads"
 AR_UPLOAD_URL_PREFIX = "/api/ar/uploads"
 
+# Windows 安裝版（desktop/，spec §21）沒有 nginx：設定時由後端直接提供前端建置好的靜態檔
+STATIC_DIR = os.getenv("QCM_STATIC_DIR", "").strip() or None
+
 
 # ---------------------------------------------------------------------------
 # 高風險項點檢班別
