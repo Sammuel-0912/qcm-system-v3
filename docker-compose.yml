@@ -35,6 +35,8 @@ services:
       # 第一位最高權限管理者：資料庫裡還沒有任何最高權限管理者時才會建立
       QCM_ADMIN_USERNAME: ${QCM_ADMIN_USERNAME:-}
       QCM_ADMIN_PASSWORD: ${QCM_ADMIN_PASSWORD:-}
+      # 一次性：設為 1 會把 QCM_ADMIN_USERNAME 的密碼重設成 QCM_ADMIN_PASSWORD（忘記密碼時用，用完要拿掉）
+      QCM_ADMIN_RESET: ${QCM_ADMIN_RESET:-}
     volumes:
       # 拍照點檢的照片與 AR 設備圖檔存在 QCM_DATA_DIR/ar-uploads，
       # 沒有這個 volume 的話重新建置容器就會全部消失。

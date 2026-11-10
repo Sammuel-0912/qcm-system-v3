@@ -15,7 +15,7 @@ export function DatasetSelect() {
   }
   if (datasets.length === 1) {
     return (
-      <span className="rounded bg-sky-50 px-2.5 py-1 font-mono text-sm text-sky-800" title="目前的廠／產品廠／線別">
+      <span className="font-mono text-lg font-bold text-sky-900" title="目前的廠／產品廠／線別">
         {datasets[0].key}
       </span>
     )
@@ -28,7 +28,7 @@ export function DatasetSelect() {
         value={dataset ?? ''}
         onChange={(e) => selectDataset(e.target.value)}
         aria-label="切換廠與線別"
-        className="rounded-md border border-slate-300 bg-white px-2 py-1 font-mono text-sm text-slate-800"
+        className="rounded-md border border-slate-300 bg-white px-2 py-1 font-mono text-lg font-bold text-sky-900"
       >
         {plants.map((plant) => (
           <optgroup key={plant} label={plant}>

@@ -117,6 +117,66 @@ function PhotoViewer({ record, onClose }: { record: PhotoInspection; onClose: ()
   )
 }
 
+/**
+ * 緊急措施（v2.15）：工程師在點檢紀錄上補填，按「儲存」才寫入；有該廠權限的人都可以修改。
+ * 顯示最後修改人與時間。
+ */
+function EmergencyMeasureCell({ record, onSaved }: { record: PhotoInspection; onSaved: (saved: PhotoInspection) => void }) {
+  const saved = record.emergencyMeasure ?? ''
+  const [value, setValue] = useState(saved)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => setValue(saved), [saved])
+  const dirty = value.trim() !== saved.trim()
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+    try {
+      onSaved(await api.saveCheckEmergencyMeasure(record.id, value))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '儲存失敗')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="w-56">
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        rows={2}
+        maxLength={2000}
+        placeholder="填寫緊急措施"
+        aria-label="緊急措施"
+        className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs"
+      />
+      <div className="mt-1 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={!dirty || saving}
+          className="rounded bg-[#0086DB] px-2 py-0.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          {saving ? '儲存中…' : '儲存'}
+        </button>
+        {dirty && !saving && (
+          <button type="button" onClick={() => setValue(saved)} className="text-xs text-slate-500 hover:underline">
+            取消
+          </button>
+        )}
+        {!dirty && record.emergencyMeasureAt && (
+          <span className="truncate text-[11px] text-slate-400" title={`${record.emergencyMeasureBy ?? ''} ${formatLocalDateTime(record.emergencyMeasureAt)}`}>
+            {record.emergencyMeasureBy}・{formatLocalDateTime(record.emergencyMeasureAt).slice(5, 16)}
+          </span>
+        )}
+      </div>
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+    </div>
+  )
+}
+
 /** 點檢儀表板：拍照點檢的良率統計與紀錄（含照片）。AR 掃碼紀錄不在此顯示。 */
 export default function ArDashboardPage() {
   const [stats, setStats] = useState<PhotoInspectionStat[]>([])
@@ -132,18 +192,23 @@ export default function ArDashboardPage() {
   const [equipmentCode, setEquipmentCode] = useState('')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
+  // 點檢結果篩選（v2.17）：全部／正常／異常
+  const [status, setStatus] = useState<'' | 'ok' | 'warn'>('')
+  // 星期日休息：預設不算（趨勢圖與站別卡片共用）
+  const [excludeOffDays, setExcludeOffDays] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const [s, r] = await Promise.all([
-        api.photoInspectionStats(),
+        api.photoInspectionStats(excludeOffDays),
         api.photoInspections({
           equipmentCode: equipmentCode || undefined,
           // 輸入框是本地時間，轉成帶時區的 ISO，後端才能正確和 UTC 比較
           start: localInputToIso(start),
           end: localInputToIso(end),
+          status: status || undefined,
         }),
       ])
       setStats(s)
@@ -153,7 +218,7 @@ export default function ArDashboardPage() {
     } finally {
       setLoading(false)
     }
-  }, [equipmentCode, start, end])
+  }, [equipmentCode, start, end, status, excludeOffDays])
 
   useEffect(() => {
     void load()
@@ -183,9 +248,10 @@ export default function ArDashboardPage() {
           equipmentCode: equipmentCode || undefined,
           start: localInputToIso(start),
           end: localInputToIso(end),
+          status: status || undefined,
           baseUrl: window.location.origin,
         })}
-        title="依目前的站別與時間篩選匯出 Excel：時間、班別、點檢結果與照片縮圖"
+        title="依目前的站別、時間與點檢結果篩選匯出 Excel：時間、班別、點檢結果與照片縮圖"
         className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
       >
         匯出紀錄（含照片）
@@ -202,7 +268,7 @@ export default function ArDashboardPage() {
     </>
   )
 
-  const filtered = Boolean(equipmentCode || start || end)
+  const filtered = Boolean(equipmentCode || start || end || status)
 
   return (
     <AppShell title="點檢看板" actions={actions}>
@@ -211,7 +277,7 @@ export default function ArDashboardPage() {
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
         )}
 
-        <CheckTrendPanel reloadKey={reloadKey} />
+        <CheckTrendPanel reloadKey={reloadKey} excludeOffDays={excludeOffDays} onExcludeOffDaysChange={setExcludeOffDays} />
 
         <section>
           <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">站別良率總覽</h2>
@@ -267,6 +333,18 @@ export default function ArDashboardPage() {
               </select>
             </label>
             <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-500">點檢結果</span>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as '' | 'ok' | 'warn')}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+              >
+                <option value="">全部</option>
+                <option value="ok">正常</option>
+                <option value="warn">異常</option>
+              </select>
+            </label>
+            <label className="block">
               <span className="mb-1 block text-xs font-medium text-slate-500">開始時間</span>
               <input
                 type="datetime-local"
@@ -290,6 +368,7 @@ export default function ArDashboardPage() {
                   setEquipmentCode('')
                   setStart('')
                   setEnd('')
+                  setStatus('')
                 }}
                 className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
               >
@@ -302,13 +381,15 @@ export default function ArDashboardPage() {
             <p className="py-8 text-center text-sm text-slate-500">{filtered ? '沒有符合條件的紀錄' : '尚無點檢紀錄'}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[40rem] text-sm">
+              <table className="w-full min-w-[60rem] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
                     <th className="py-2 pr-2 font-medium">站別</th>
                     <th className="py-2 pr-2 font-medium">狀態</th>
                     <th className="py-2 pr-2 font-medium">點檢時間</th>
                     <th className="py-2 pr-2 font-medium">照片</th>
+                    <th className="py-2 pr-2 font-medium">異常說明</th>
+                    <th className="py-2 pr-2 font-medium">緊急措施</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -322,7 +403,6 @@ export default function ArDashboardPage() {
                           {r.checkContent}
                         </span>
                         {r.kpivControlLevel && <KpivLevelBadge value={r.kpivControlLevel} />}
-                        {r.note && <span className="block text-xs text-amber-700">備註：{r.note}</span>}
                       </td>
                       <td className="py-2 pr-2">
                         <StatusBadge status={r.status} />
@@ -332,6 +412,15 @@ export default function ArDashboardPage() {
                       </td>
                       <td className="py-2 pr-2">
                         <Thumbnail record={r} onOpen={() => setViewing(r)} />
+                      </td>
+                      <td className="max-w-[14rem] py-2 pr-2 text-xs">
+                        {r.note ? <span className="whitespace-pre-line text-amber-800">{r.note}</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="py-2 pr-2">
+                        <EmergencyMeasureCell
+                          record={r}
+                          onSaved={(saved) => setRows((prev) => prev.map((x) => (x.id === saved.id ? saved : x)))}
+                        />
                       </td>
                     </tr>
                   ))}

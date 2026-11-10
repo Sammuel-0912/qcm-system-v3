@@ -129,6 +129,19 @@ npx wrangler secret put QCM_ADMIN_PASSWORD    # 至少 8 碼
 ```
 
 > `QCM_ADMIN_*` 只在資料庫裡還沒有最高權限管理者時建立帳號；之後改密碼請從網頁右上角改。
+>
+> ⚠ secret 是在**容器啟動時**才帶進去的。改了 secret 之後，正在跑的容器不會自動套用：要等它閒置 30 分鐘休眠後再開，
+> 或部署新的後端映像（後端程式有變更時 `npm run deploy` 會換掉容器）。
+>
+> **登不進去／忘記唯一管理者的密碼**：設定一次性的重設開關，部署後用新密碼登入，**之後一定要刪掉**（否則每次容器重開都會把密碼重設回去）：
+>
+> ```bash
+> npx wrangler secret put QCM_ADMIN_PASSWORD   # 新密碼（至少 8 碼）
+> npx wrangler secret put QCM_ADMIN_RESET      # 輸入 1
+> npm run deploy
+> # 登入成功後
+> npx wrangler secret delete QCM_ADMIN_RESET
+> ```
 
 ---
 

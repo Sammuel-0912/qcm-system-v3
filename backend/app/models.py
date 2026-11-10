@@ -340,6 +340,8 @@ class FactComplaint(Base):
     id: Mapped[int] = _pk()
     batch_id: Mapped[int] = mapped_column(ForeignKey("import_batch.id", ondelete="CASCADE"), nullable=False)
     seq: Mapped[int | None] = mapped_column(Integer)
+    # v2.17：序號欄改填產品序號（13 碼英數，例 IOV25C75081W0）時存這裡；填數字流水號時仍存 seq
+    serial_no: Mapped[str | None] = mapped_column(Text)
     report_no: Mapped[str | None] = mapped_column(Text)  # 8D 編號
     site: Mapped[str | None] = mapped_column(Text)
     plant: Mapped[str | None] = mapped_column(Text)
@@ -556,6 +558,10 @@ class CheckPhotoInspection(Base):
     inspected_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.timezone.utc)
     )
+    # 緊急措施（v2.15）：點檢後由工程師在點檢看板補填，可修改；記錄最後修改人與時間
+    emergency_measure: Mapped[str | None] = mapped_column(Text)
+    emergency_measure_by: Mapped[str | None] = mapped_column(Text)
+    emergency_measure_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CheckCountImport(Base):

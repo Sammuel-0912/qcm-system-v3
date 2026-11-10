@@ -26,21 +26,31 @@ const MAX_SLICES = WARN_SLICES.length
 /**
  * 點檢看板上方（spec §18）：左＝每日異常次數＋漏點檢數折線；右＝KPIV 點檢內容的異常分布圓餅（只畫有異常的項目）。
  * 兩張圖共用期間（近 7／14／30 天），整條線、不吃下方紀錄的篩選；匯入的歷史點檢數量（spec §19）也算在內。
+ * v2.15：都從起算日（預設 10/21，QCM_CHECK_MISSED_FROM）算；「不含星期日」勾選（預設勾）同時控制下方站別卡片。
  */
-export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
+export function CheckTrendPanel({
+  reloadKey,
+  excludeOffDays,
+  onExcludeOffDaysChange,
+}: {
+  reloadKey: number
+  /** 不算星期日（休息日）；與下方站別卡片共用 */
+  excludeOffDays: boolean
+  onExcludeOffDaysChange: (value: boolean) => void
+}) {
   const [days, setDays] = useState<number>(14)
   const [data, setData] = useState<CheckTrend | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     api
-      .checkTrend(days)
+      .checkTrend(days, excludeOffDays)
       .then((d) => {
         setData(d)
         setError(null)
       })
       .catch((err) => setError(err instanceof Error ? err.message : '載入失敗'))
-  }, [days, reloadKey])
+  }, [days, excludeOffDays, reloadKey])
 
   const rows = (data?.series ?? []).map((r) => ({ date: r.date.slice(5).replace('-', '/'), 異常次數: r.warn, 漏點檢數: r.missed }))
 
@@ -60,7 +70,11 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
     <section className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xs font-medium uppercase tracking-wide text-slate-400">點檢趨勢與異常分布</h2>
-        <div className="ml-auto inline-flex overflow-hidden rounded-md border border-slate-300 text-sm" role="group" aria-label="期間">
+        <label className="ml-auto flex items-center gap-1.5 text-sm text-slate-600" title="星期日休息：異常次數、漏點檢與站別卡片都不算星期日">
+          <input type="checkbox" checked={excludeOffDays} onChange={(e) => onExcludeOffDaysChange(e.target.checked)} />
+          不含星期日
+        </label>
+        <div className="inline-flex overflow-hidden rounded-md border border-slate-300 text-sm" role="group" aria-label="期間">
           {RANGES.map((d) => (
             <button
               key={d}
@@ -100,8 +114,9 @@ export function CheckTrendPanel({ reloadKey }: { reloadKey: number }) {
             </ResponsiveContainer>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            依班別的開班日統計（夜班跨午夜算開班當天）。漏點檢＝已結束的點檢時段沒有點檢
-            {data?.trackingFrom ? `，自 ${formatLocalDateTime(data.trackingFrom).slice(0, 10)} 起算（之前為試運行）；星期日與整班沒有任何點檢的班別不算` : '；尚無拍照點檢時不計'}。
+            依班別的開班日統計（夜班跨午夜算開班當天）。異常次數與漏點檢都自 {data?.countFrom ?? '—'} 起算（之前為試運行）
+            {data?.excludeOffDays ? '，不含星期日' : ''}。漏點檢＝已結束的點檢時段沒有點檢
+            {data?.trackingFrom ? `，從 ${formatLocalDateTime(data.trackingFrom).slice(0, 10)} 起；整班沒有任何點檢的班別不算` : '；尚無拍照點檢時不計'}。
             {data && data.totals.imported > 0 && `異常次數與漏點檢也算入匯入的歷史點檢（期間內 ${data.totals.imported} 筆）。`}
           </p>
         </div>

@@ -15,7 +15,7 @@ type Report = {
   warnings: string[]
 }
 
-const COUNT_LABELS: Record<string, string> = {
+export const COUNT_LABELS: Record<string, string> = {
   detectionMethods: '偵測方式字典',
   equipment: '設備',
   errorCodes: '錯誤碼',

@@ -16,6 +16,13 @@ V3_EXPORT = ROOT / "點檢紀錄_20261026_224746.xlsx"  # 本系統「匯出紀�
 needs_exports = pytest.mark.skipif(not (V2_EXPORT.exists() and V3_EXPORT.exists()), reason="需要兩份點檢紀錄 Excel")
 
 
+@pytest.fixture(autouse=True)
+def _count_from_any_day(monkeypatch):
+    """兩份點檢紀錄是 10/16–10/26（試運行期間）：關掉 v2.15 的起算日與排除週日，只測匯入與累加。"""
+    monkeypatch.setattr("app.services.check_trend.CHECK_MISSED_FROM", dt.date(2026, 1, 1))
+    monkeypatch.setattr("app.services.check_trend.CHECK_OFF_WEEKDAYS", frozenset())
+
+
 def _xlsx(tmp_path: pathlib.Path, rows: list[list]) -> str:
     wb = Workbook()
     for r in rows:
@@ -164,3 +171,30 @@ def test_count_import_replace_overwrites_previous_imports(app_ctx):
     assert su.get("/api/v1/check-inspections/count-import").json()["total"] == 91
     # 不勾覆蓋時照舊累加
     assert _upload(su, V2_EXPORT).json()["replaced"] == 0
+
+
+@needs_data
+def test_cards_count_from_start_date_and_can_skip_sundays(app_ctx, monkeypatch):
+    """v2.15：站別卡片只算起算日之後的點檢；預設不算星期日，excludeOffDays=false 時算進去。"""
+    from app.db import SessionLocal
+    from app.models import CheckCountImport
+
+    monkeypatch.setattr("app.services.check_trend.CHECK_MISSED_FROM", dt.date(2026, 10, 27))
+    monkeypatch.setattr("app.services.check_trend.CHECK_OFF_WEEKDAYS", frozenset({6}))
+    su = app_ctx(ADMIN)
+    assert _import(su, V1026, "WJ1-DCS-PM1-數據庫-1026.xlsx").status_code == 200
+    site = dt.timezone(dt.timedelta(hours=8))
+    with SessionLocal() as s:
+        for day, status in ((26, "warn"), (27, "ok"), (28, "warn"), (1, "ok")):  # 10/26 試運行、11/1 是星期日
+            month = 11 if day == 1 else 10
+            s.add(CheckCountImport(dataset="WJ1-DCS-PM1", equipment_code="ZZ01", station="測試站", check_content="c",
+                                   status=status, inspected_at=dt.datetime(2026, month, day, 10, tzinfo=site),
+                                   source="t.xlsx", imported_by="t"))
+        s.commit()
+
+    def card(**params):
+        rows = su.get("/api/v1/check-inspections/stats", params=params).json()
+        return next(((c["okCount"], c["warnCount"]) for c in rows if c["equipmentCode"] == "ZZ01"), None)
+
+    assert card() == (1, 1)  # 10/27 正常、10/28 異常
+    assert card(excludeOffDays="false") == (2, 1)  # 加上星期日 11/1

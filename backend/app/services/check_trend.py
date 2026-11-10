@@ -9,6 +9,8 @@
 - 最高權限管理者「匯入歷史點檢數量」的資料（spec §19）也算進每日異常次數與分布；
   v2.11 起也算進點檢時段：時段內有匯入的點檢就不算漏點檢（依設備代碼＋點檢內容對回點檢項目，對不到的不算）。
   起算點仍是第一筆拍照點檢所在的班，匯入的舊資料不會讓起算點提前。
+- v2.15：異常次數、分布與站別卡片也從起算日算（counts_on）；不生產的星期可由看板勾選是否排除（預設排除），
+  排除時異常次數與漏點檢都不算那幾天。
 """
 from __future__ import annotations
 
@@ -30,12 +32,19 @@ def _shifts_of_day(day: dt.date) -> list[dict]:
     return shifts
 
 
+def counts_on(at: dt.datetime, exclude_off_days: bool = True) -> bool:
+    """這筆點檢（拍照或匯入）是否算進點檢看板：所屬班的開班日不早於起算日，且（排除時）不是不生產的星期。"""
+    day = shift_of(utc(at))["date"]
+    return day >= CHECK_MISSED_FROM and not (exclude_off_days and day.weekday() in CHECK_OFF_WEEKDAYS)
+
+
 def check_trend(
     items: list[FactCheckItem],
     records: list[CheckPhotoInspection],
     days: int,
     now: dt.datetime | None = None,
     imported: list[CheckCountImport] = (),
+    exclude_off_days: bool = True,
 ) -> dict:
     """items：目前的點檢項目；records：這條線的拍照點檢紀錄（任意順序）；imported：這條線匯入的歷史點檢數量。"""
     now = utc(now or dt.datetime.now(dt.timezone.utc))
@@ -72,7 +81,7 @@ def check_trend(
         for shift in _shifts_of_day(day):
             if shift["start"] > now or tracking_from is None or shift["start"] < tracking_from:
                 continue
-            if day.weekday() in CHECK_OFF_WEEKDAYS or shift["start"] not in worked_shifts:
+            if (exclude_off_days and day.weekday() in CHECK_OFF_WEEKDAYS) or shift["start"] not in worked_shifts:
                 continue
             for item in items:
                 interval = dt.timedelta(hours=float(item.interval_hours or 2))
@@ -83,7 +92,10 @@ def check_trend(
         series.append({"date": day.isoformat(), "warn": 0, "inspected": 0, "missed": missed, "expected": expected})
 
     index = {row["date"]: row for row in series}
-    in_range = [r for r in [*records, *imported] if since <= utc(r.inspected_at) <= now]
+    in_range = [
+        r for r in [*records, *imported]
+        if since <= utc(r.inspected_at) <= now and counts_on(r.inspected_at, exclude_off_days)
+    ]
     for r in in_range:
         row = index.get(shift_of(utc(r.inspected_at))["date"].isoformat())
         if row is None:  # 期間第一天 08:00 前的紀錄屬於前一天夜班
@@ -110,10 +122,13 @@ def check_trend(
         entry["warn"] += r.status == "warn"
     total = len(in_range)
     warn = sum(1 for r in in_range if r.status == "warn")
-    imported_in_range = sum(1 for r in imported if since <= utc(r.inspected_at) <= now)
+    imported_ids = {id(r) for r in imported}
+    imported_in_range = sum(1 for r in in_range if id(r) in imported_ids)
     return {
         "days": days,
         "since": since.isoformat(),
+        "countFrom": CHECK_MISSED_FROM.isoformat(),
+        "excludeOffDays": exclude_off_days,
         "trackingFrom": tracking_from.isoformat() if tracking_from else None,
         "series": series,
         "items": sorted(dist.values(), key=lambda e: (-e["warn"], -e["total"], e["station"] or "")),

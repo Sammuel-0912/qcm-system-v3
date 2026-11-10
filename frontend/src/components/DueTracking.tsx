@@ -36,11 +36,60 @@ function arc(cx: number, cy: number, r: number, start: number, end: number) {
   return `M ${x1} ${y1} A ${r} ${r} 0 ${end - start > Math.PI ? 1 : 0} 1 ${x2} ${y2}`
 }
 
+export type RateInfo = {
+  /** 例：完成率、結案率 */
+  title: string
+  done: number
+  total: number
+  /** 分子的名稱，例：已完成、OK */
+  doneLabel: string
+  hint: string
+}
+
+/** 完成率／結案率（v2.15）：與右側圓餅同一組篩選結果 */
+function RatePanel({ rate }: { rate: RateInfo }) {
+  const pct = rate.total ? (rate.done / rate.total) * 100 : 0
+  return (
+    <section className="flex flex-col justify-center rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-700">{rate.title}</h3>
+      <p className="mt-1 text-4xl font-bold tabular-nums text-emerald-700">{rate.total ? `${pct.toFixed(1)}%` : '—'}</p>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+        <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-2 text-sm text-slate-600">
+        {rate.doneLabel} <b className="tabular-nums">{rate.done}</b>／總數 <b className="tabular-nums">{rate.total}</b>
+      </p>
+      <p className="mt-1 text-xs text-slate-400">{rate.hint}</p>
+    </section>
+  )
+}
+
 /**
  * 預計完成數與逾期數的圓餅（spec §17）：依目前篩選（不含完成期限）統計；點一塊或圖例即篩選清單，再點一次取消。
- * 已準時完成的不列入。
+ * 已準時完成的不列入。有 rate 時左邊放完成率／結案率、右邊放圓餅（v2.15）。
  */
 export function DuePie({
+  stats,
+  selected,
+  onSelect,
+  rate,
+}: {
+  stats: DueStats
+  selected: DueKey | ''
+  onSelect: (key: DueKey | '') => void
+  rate?: RateInfo
+}) {
+  const pie = <DuePieCard stats={stats} selected={selected} onSelect={onSelect} />
+  if (!rate) return pie
+  return (
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2.5fr)]">
+      <RatePanel rate={rate} />
+      {pie}
+    </div>
+  )
+}
+
+function DuePieCard({
   stats,
   selected,
   onSelect,

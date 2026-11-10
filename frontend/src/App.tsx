@@ -12,6 +12,7 @@ import { AR_MARKER_ENABLED } from './features'
 import { useAuth } from './auth/AuthContext'
 import LoginPage from './pages/LoginPage'
 import UsersPage from './pages/UsersPage'
+import ImportHistoryPage from './pages/ImportHistoryPage'
 
 /** 需要登入的頁面；切換資料集（線別）時以 key 重新掛載，各頁自然重抓資料 */
 function Protected({ children, admin = false }: { children: ReactNode; admin?: boolean }) {
@@ -29,6 +30,7 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<Navigate to="/quality" replace />} />
       <Route path="/admin/users" element={<Protected admin><UsersPage /></Protected>} />
+      <Route path="/admin/imports" element={<Protected admin><ImportHistoryPage /></Protected>} />
       <Route path="/quality" element={<Protected><QualityPage /></Protected>} />
       <Route path="/complaints" element={<Protected><ComplaintsPage /></Protected>} />
       <Route path="/process" element={<Protected><ProcessPage /></Protected>} />

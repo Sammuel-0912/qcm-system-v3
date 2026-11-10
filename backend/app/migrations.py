@@ -174,6 +174,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("fact_complaint", "emergency_measure_at", "TIMESTAMP WITH TIME ZONE"),
     ("fact_complaint", "improvement", "TEXT"),
     ("fact_complaint", "improvement_effective_at", "TIMESTAMP WITH TIME ZONE"),
+    ("fact_complaint", "serial_no", "TEXT"),
     ("fact_check_item", "kpiv_control_level", "TEXT"),
     # RBAC（spec §15）：資料集
     ("import_batch", "plant", "VARCHAR(8)"),
@@ -182,6 +183,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("import_batch", "dataset", "TEXT"),
     ("import_batch", "data_date", "VARCHAR(8)"),
     ("check_photo_inspection", "dataset", "TEXT"),
+    # 點檢紀錄的緊急措施（v2.15）
+    ("check_photo_inspection", "emergency_measure", "TEXT"),
+    ("check_photo_inspection", "emergency_measure_by", "TEXT"),
+    ("check_photo_inspection", "emergency_measure_at", "TIMESTAMP WITH TIME ZONE"),
 )
 
 

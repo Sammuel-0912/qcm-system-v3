@@ -41,7 +41,20 @@ export default function ComplaintsPage() {
   return (
     <AppShell title="客訴案件管理">
       <main className="mx-auto max-w-7xl space-y-4 px-6 py-6">
-        {data && <DuePie stats={data.dueStats} selected={filter.due} onSelect={(due) => changeFilter({ ...filter, due })} />}
+        {data && (
+          <DuePie
+            stats={data.dueStats}
+            selected={filter.due}
+            onSelect={(due) => changeFilter({ ...filter, due })}
+            rate={{
+              title: '結案率',
+              done: data.rate.done,
+              total: data.rate.total,
+              doneLabel: 'OK',
+              hint: '結案＝客訴報表「改善判定」（AX 欄）為 OK；總數依目前篩選（不含完成期限）。',
+            }}
+          />
+        )}
         <ListFilterBar value={filter} onChange={changeFilter} options={data?.options} occurredLabel="日期" groupLabel="客戶" />
         {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
@@ -66,7 +79,9 @@ export default function ComplaintsPage() {
                     title="點擊查看 8D 明細與等級歷程"
                     className="cursor-pointer border-b border-slate-100 align-top hover:bg-slate-50"
                   >
-                    <td className="px-3 py-2 tabular-nums">{c.seq}</td>
+                    <td className="px-3 py-2 tabular-nums">
+                      {c.serialNo ? <span className="whitespace-nowrap font-mono text-xs">{c.serialNo}</span> : c.seq}
+                    </td>
                     <td className="px-3 py-2 font-mono text-xs">{c.reportNo ?? '—'}</td>
                     <td className="whitespace-nowrap px-3 py-2 tabular-nums">{day(c.complainedAt)}</td>
                     <td className="px-3 py-2">{c.customer}</td>

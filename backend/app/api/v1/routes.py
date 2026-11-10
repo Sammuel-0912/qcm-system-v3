@@ -53,7 +53,7 @@ from ...services.check_monitor import (
     utc,
 )
 from ...services import presence
-from ...services.check_trend import check_trend
+from ...services.check_trend import check_trend, counts_on
 from ...services.count_import import CountImportError, parse_count_workbook
 from ...services.due import (
     DUE_FILTERS,
@@ -793,6 +793,7 @@ def _complaint_out(c: FactComplaint, *, full: bool = False) -> dict:
     out = {
         "id": c.id,
         "seq": c.seq,
+        "serialNo": c.serial_no,  # v2.17：產品序號（序號欄填 13 碼英數時）
         "reportNo": c.report_no,
         "complainedAt": c.complained_at.isoformat() if c.complained_at else None,
         "customer": c.customer,
@@ -897,8 +898,10 @@ def _filtered_listing(rows: list[dict], f: ListFilters) -> dict:
     }
     kept = [r for r in rows if f.keep(r)]
     stats = due_stats([r["due"] for r in kept])
+    # 完成率／結案率（v2.15）：與圓餅同一組篩選結果；_done 由各清單定義（製程：8D 有實際完成；客訴：改善判定 OK）
+    rate = {"done": sum(1 for r in kept if r["_done"]), "total": len(kept)}
     listed = [{k: v for k, v in r.items() if not k.startswith("_")} for r in kept if due_matches(r["due"], f.due)]
-    return {**paginate(listed, f.page, f.page_size), "dueStats": stats, "options": filter_options}
+    return {**paginate(listed, f.page, f.page_size), "dueStats": stats, "rate": rate, "options": filter_options}
 
 
 @router.get("/complaints")
@@ -931,6 +934,8 @@ def list_complaints(
                 "_occurred": c.complained_at,
                 "_group": c.customer,
                 "_improved": c.improvement_effective_at,
+                # 結案：客訴報表 AX 欄「改善判定」為 OK
+                "_done": (c.verdict or "").strip().upper() == "OK",
             }
         )
     return _filtered_listing(rows, f)
@@ -987,6 +992,8 @@ def list_repairs(
                 "_occurred": r.tested_at,
                 "_group": r.product_model,
                 "_improved": r.improvement_effective_at,
+                # 完成：8D 有實際完成日期
+                "_done": r.d8_done_at is not None,
             }
         )
     return _filtered_listing(rows, f)
@@ -1078,15 +1085,29 @@ def do_import(
 
 @router.get("/import/history")
 def import_history(actor: User = Depends(current_user), session: Session = Depends(get_session)):
+    """匯入歷程（v2.16）：每次匯入一筆，新到舊；只列自己看得到的廠。
+
+    匯入報告存在 batch.error_log（import_workbook 寫入）；這裡回傳警告與等級事件摘要，不含逐筆等級事件。
+    """
     batches = [
         b
         for b in session.scalars(select(ImportBatch).order_by(ImportBatch.id.desc())).all()
         if b.plant and can_view_plant(actor.role, actor.plant, b.plant)
     ]
-    return [
-        {**_batch_info(b), "status": b.status, "isActive": b.is_active, "rowCounts": b.row_counts}
-        for b in batches
-    ]
+    out = []
+    for b in batches:
+        report = b.error_log or {}
+        out.append({
+            **_batch_info(b),
+            "status": b.status,
+            "isActive": b.is_active,
+            "rowCounts": b.row_counts,
+            "warnings": report.get("warnings", []),
+            "levelEventSummary": report.get("levelEventSummary"),
+            "unmatchedCount": len(report.get("unmatchedKeys", [])),
+            "skippedRepairCount": len(report.get("skippedRepairRows", [])),
+        })
+    return out
 
 
 class PresenceIn(BaseModel):
@@ -1216,8 +1237,10 @@ def _photo_records(
     equipment_code: str | None = None,
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
+    status: str | None = None,
 ) -> list[CheckPhotoInspection]:
-    """該資料集（一條線）的拍照點檢紀錄，新到舊；只列目前點檢項目底下的紀錄（REQ-V2-CHK-03）。"""
+    """該資料集（一條線）的拍照點檢紀錄，新到舊；只列目前點檢項目底下的紀錄（REQ-V2-CHK-03）。
+    status：ok（正常）／warn（異常），不給則全部（v2.17）。"""
     stmt = (
         select(CheckPhotoInspection)
         .where(CheckPhotoInspection.dataset == batch.dataset)
@@ -1225,6 +1248,8 @@ def _photo_records(
     )
     if equipment_code:
         stmt = stmt.where(CheckPhotoInspection.equipment_code == equipment_code)
+    if status:
+        stmt = stmt.where(CheckPhotoInspection.status == status)
     records = session.scalars(stmt).all()
     current = {item_key(i.equipment_code, i.kpov_no, i.check_content) for i in check_items(session, batch.id)}
     records = [r for r in records if item_key(r.equipment_code, r.kpov_no, r.check_content) in current]
@@ -1251,9 +1276,36 @@ def _photo_out(record: CheckPhotoInspection, names: dict[str, str], levels: dict
         "kpivControlLevel": levels.get(item_key(record.equipment_code, record.kpov_no, record.check_content)),
         "status": record.status,
         "note": record.note,
+        "emergencyMeasure": record.emergency_measure,
+        "emergencyMeasureBy": record.emergency_measure_by,
+        "emergencyMeasureAt": _iso_utc(record.emergency_measure_at),
         "photoUrl": record.photo_url,
         "inspectedAt": utc(record.inspected_at).isoformat(),
     }
+
+
+class EmergencyMeasureIn(BaseModel):
+    emergencyMeasure: str = Field("", max_length=2000)
+
+
+@router.put("/check-inspections/{record_id}/emergency-measure")
+def save_check_emergency_measure(
+    record_id: int,
+    body: EmergencyMeasureIn,
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """點檢紀錄的緊急措施（v2.15）：有該廠權限的人都可填寫／修改，記錄最後修改人與時間。
+    點檢本身（結果、照片、異常說明）仍不可修改。"""
+    record = session.get(CheckPhotoInspection, record_id)
+    if record is None or record.dataset != scope.dataset:
+        raise HTTPException(status_code=404, detail="找不到這筆點檢紀錄，請重新整理後再試")
+    text_ = body.emergencyMeasure.strip()
+    record.emergency_measure = text_ or None
+    record.emergency_measure_by = scope.user.display_name if text_ else None
+    record.emergency_measure_at = dt.datetime.now(dt.timezone.utc) if text_ else None
+    session.commit()
+    return _photo_out(record, _station_names(session, scope.batch), _control_levels(session, scope.batch))
 
 
 @router.get("/check-inspections")
@@ -1261,23 +1313,33 @@ def list_check_inspections(
     equipment_code: str | None = Query(None, alias="equipmentCode"),
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
+    status: str | None = Query(None, pattern="^(ok|warn)$"),
     limit: int = Query(200, ge=1, le=1000),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """點檢儀表板：拍照點檢紀錄，新到舊。start／end 為帶時區的 ISO 時間（不帶時區視為 UTC）。"""
-    records = _photo_records(session, scope.batch, equipment_code, start, end)
+    records = _photo_records(session, scope.batch, equipment_code, start, end, status)
     names = _station_names(session, scope.batch)
     levels = _control_levels(session, scope.batch)
     return {"total": len(records), "items": [_photo_out(r, names, levels) for r in records[:limit]]}
 
 
 @router.get("/check-inspections/stats")
-def check_inspection_stats(scope: Scope = Depends(current_scope), session: Session = Depends(get_session)):
-    """點檢儀表板的良率卡片：依設備（站別）彙總拍照點檢的正常／異常次數。"""
+def check_inspection_stats(
+    exclude_off_days: bool = Query(True, alias="excludeOffDays"),
+    scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session),
+):
+    """點檢儀表板的良率卡片：依設備（站別）彙總拍照點檢的正常／異常次數。
+
+    v2.15：只算起算日（CHECK_MISSED_FROM）之後的點檢；excludeOffDays（預設是）時不算不生產的星期（週日）。
+    """
     names = _station_names(session, scope.batch)
     stats: dict[str, dict] = {}
     for record in _photo_records(session, scope.batch):
+        if not counts_on(record.inspected_at, exclude_off_days):
+            continue
         entry = stats.setdefault(
             record.equipment_code,
             {
@@ -1292,6 +1354,8 @@ def check_inspection_stats(scope: Scope = Depends(current_scope), session: Sessi
         entry["okCount" if record.status == "ok" else "warnCount"] += 1
     # 匯入的歷史點檢數量（spec §19）：只累加卡片，不受「目前點檢項目」過濾（舊點檢內容的文字可能已改）
     for row in session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)):
+        if not counts_on(row.inspected_at, exclude_off_days):
+            continue
         entry = stats.setdefault(
             row.equipment_code,
             {
@@ -1316,12 +1380,16 @@ def check_inspection_stats(scope: Scope = Depends(current_scope), session: Sessi
 @router.get("/check-inspections/trend")
 def check_inspection_trend(
     days: int = Query(14, ge=1, le=90),
+    exclude_off_days: bool = Query(True, alias="excludeOffDays"),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
 ):
     """點檢看板：每日異常次數與漏點檢數、KPIV 點檢內容的異常分布（spec §18）。"""
     imported = session.scalars(select(CheckCountImport).where(CheckCountImport.dataset == scope.dataset)).all()
-    return check_trend(check_items(session, scope.batch.id), _photo_records(session, scope.batch), days, imported=imported)
+    return check_trend(
+        check_items(session, scope.batch.id), _photo_records(session, scope.batch), days,
+        imported=imported, exclude_off_days=exclude_off_days,
+    )
 
 
 def _count_import_summary(session: Session, dataset: str) -> dict:
@@ -1487,6 +1555,7 @@ def export_check_inspections(
     equipment_code: str | None = Query(None, alias="equipmentCode"),
     start: dt.datetime | None = None,
     end: dt.datetime | None = None,
+    status: str | None = Query(None, pattern="^(ok|warn)$"),
     base_url: str | None = Query(None, alias="baseUrl", pattern=r"^https?://[^\s]+$"),
     scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session),
@@ -1501,7 +1570,7 @@ def export_check_inspections(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    records = _photo_records(session, scope.batch, equipment_code, start, end)  # 新到舊
+    records = _photo_records(session, scope.batch, equipment_code, start, end, status)  # 新到舊
     if not records:
         raise HTTPException(status_code=404, detail="沒有符合條件的點檢紀錄可匯出")
     truncated = len(records) > EXPORT_MAX_ROWS
@@ -1515,9 +1584,10 @@ def export_check_inspections(
     ws.title = "點檢紀錄"
     headers = [
         "日期", "班別", f"點檢時間（{offset}）", "站別", "設備代碼", "KPOV 編號",
-        "點檢內容", "點檢結果", "備註", "照片", "原圖連結",
+        "點檢內容", "點檢結果", "異常說明", "緊急措施", "照片", "原圖連結",
     ]
-    widths = [12, 8, 20, 18, 13, 12, 36, 10, 20, 35, 14]
+    widths = [12, 8, 20, 18, 13, 12, 36, 10, 24, 24, 35, 14]
+    photo_col, link_col = headers.index("照片") + 1, headers.index("原圖連結") + 1
     if truncated:
         ws.append([f"僅匯出最新 {EXPORT_MAX_ROWS} 筆，請縮小時間範圍後再匯出其餘紀錄"])
         ws.cell(1, 1).font = Font(bold=True, color="C00000")
@@ -1546,6 +1616,7 @@ def export_check_inspections(
                 r.check_content,
                 "正常" if r.status == "ok" else "異常",
                 r.note,
+                r.emergency_measure,
                 None,
                 None,
             ]
@@ -1558,13 +1629,13 @@ def export_check_inspections(
 
         image = _thumbnail(_photo_bytes(r.photo_url))
         if image is None:
-            ws.cell(row, 10).value = "照片遺失"
+            ws.cell(row, photo_col).value = "照片遺失"
             ws.row_dimensions[row].height = 30
         else:
-            ws.add_image(image, ws.cell(row, 10).coordinate)
+            ws.add_image(image, ws.cell(row, photo_col).coordinate)
             ws.row_dimensions[row].height = image.height * 0.75 + 6  # px -> pt
 
-        link = ws.cell(row, 11)
+        link = ws.cell(row, link_col)
         if base_url:
             link.value = "開啟原圖"
             link.hyperlink = base_url.rstrip("/") + r.photo_url

@@ -35,7 +35,10 @@ const NAV: NavGroup[] = [
 const ADMIN_NAV: NavGroup = {
   title: '系統管理',
   hint: 'Administration',
-  items: [{ to: '/admin/users', label: '使用者管理', hint: 'Users & Roles' }],
+  items: [
+    { to: '/admin/users', label: '使用者管理', hint: 'Users & Roles' },
+    { to: '/admin/imports', label: '匯入歷程', hint: 'Import History' },
+  ],
 }
 
 function isActive(pathname: string, to: string) {
@@ -86,7 +89,7 @@ function SideNav() {
   )
 }
 
-export const PLATFORM_NAME = 'CNE 品控力風險智控平台'
+export const PLATFORM_NAME = 'CNE 品質風險智控平台'
 const PIN_KEY = 'qcm.sidebar.pinned'
 
 function readPinned(): boolean {
@@ -213,7 +216,7 @@ export function AppShell({ title, actions, children }: Props) {
             >
               ☰
             </button>
-            <h1 className="text-xl font-semibold">{title}</h1>
+            <h1 className="text-2xl font-bold text-slate-900">{title}</h1>
             <DatasetSelect />
             <div className="ml-auto flex items-center gap-4">
               {online !== null && (

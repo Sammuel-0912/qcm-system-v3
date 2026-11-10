@@ -392,6 +392,14 @@ def test_photo_inspection_dashboard(client):
     past = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)).isoformat()
     assert client.get("/api/v1/check-inspections", params={"start": future}).json()["total"] == 0
     assert client.get("/api/v1/check-inspections", params={"start": past, "end": future}).json()["total"] == 2
+    # 點檢結果篩選（v2.17）：正常／異常；列表與匯出都吃這個條件
+    warn_only = client.get("/api/v1/check-inspections", params={"status": "warn"}).json()
+    assert [i["id"] for i in warn_only["items"]] == [ids[1]]
+    assert [i["id"] for i in client.get("/api/v1/check-inspections", params={"status": "ok"}).json()["items"]] == [ids[0]]
+    assert client.get("/api/v1/check-inspections", params={"status": "bad"}).status_code == 422
+    exported = client.get("/api/v1/check-inspections/export", params={"status": "ok"})
+    assert exported.status_code == 200
+    assert openpyxl.load_workbook(io.BytesIO(exported.content)).active.max_row >= 2
 
     stats = client.get("/api/v1/check-inspections/stats").json()
     assert stats == [
@@ -407,6 +415,19 @@ def test_photo_inspection_dashboard(client):
     ]
 
     # 匯出：舊到新、廠區時間（UTC+8）、班別、正常那筆嵌入縮圖、異常那筆照片讀不出來
+    # 緊急措施（v2.15）：可填寫、修改、清空；記錄修改人與時間；別的資料集看不到這筆
+    oldest = items[-1]
+    url = f"/api/v1/check-inspections/{oldest['id']}/emergency-measure"
+    saved = client.put(url, json={"emergencyMeasure": "  更換治具後重新點檢  "})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["emergencyMeasure"] == "更換治具後重新點檢"
+    assert saved.json()["emergencyMeasureBy"] and saved.json()["emergencyMeasureAt"].endswith("+00:00")
+    assert saved.json()["note"] == oldest["note"]  # 異常說明不受影響
+    listed = {i["id"]: i for i in client.get("/api/v1/check-inspections").json()["items"]}
+    assert listed[oldest["id"]]["emergencyMeasure"] == "更換治具後重新點檢"
+    assert client.put("/api/v1/check-inspections/999999/emergency-measure", json={"emergencyMeasure": "x"}).status_code == 404
+    assert client.put(url, json={"emergencyMeasure": "x" * 2001}).status_code == 422
+
     export = client.get("/api/v1/check-inspections/export", params={"baseUrl": "https://qcm.example.com"})
     assert export.status_code == 200
     assert "filename*=UTF-8''" in export.headers["content-disposition"]
@@ -414,7 +435,7 @@ def test_photo_inspection_dashboard(client):
     ws = openpyxl.load_workbook(io.BytesIO(export.content)).active
     assert [c.value for c in ws[1]] == [
         "日期", "班別", "點檢時間（UTC+8）", "站別", "設備代碼", "KPOV 編號",
-        "點檢內容", "點檢結果", "備註", "照片", "原圖連結",
+        "點檢內容", "點檢結果", "異常說明", "緊急措施", "照片", "原圖連結",
     ]
     oldest = items[-1]
     exported = dt.datetime.strptime(ws.cell(2, 3).value, "%Y-%m-%d %H:%M:%S")
@@ -422,9 +443,10 @@ def test_photo_inspection_dashboard(client):
     assert exported - utc_at == dt.timedelta(hours=8)
     assert ws.cell(2, 2).value in ("白班", "夜班")
     assert [ws.cell(r, 8).value for r in (2, 3)] == ["正常", "異常"]
-    assert len(ws._images) == 1 and ws.cell(2, 10).value is None
-    assert ws.cell(3, 10).value == "照片遺失"
-    assert ws.cell(2, 11).hyperlink.target == "https://qcm.example.com" + oldest["photoUrl"]
+    assert ws.cell(2, 10).value == "更換治具後重新點檢"
+    assert len(ws._images) == 1 and ws.cell(2, 11).value is None
+    assert ws.cell(3, 11).value == "照片遺失"
+    assert ws.cell(2, 12).hyperlink.target == "https://qcm.example.com" + oldest["photoUrl"]
     # 篩選與列表相同；沒有符合的紀錄回 404；baseUrl 不是 http(s) 回 422
     assert client.get("/api/v1/check-inspections/export", params={"equipmentCode": "NOPE"}).status_code == 404
     assert client.get("/api/v1/check-inspections/export", params={"baseUrl": "javascript:x"}).status_code == 422

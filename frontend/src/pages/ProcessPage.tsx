@@ -42,7 +42,20 @@ export default function ProcessPage() {
   return (
     <AppShell title="製程風險管理">
       <main className="mx-auto max-w-7xl space-y-4 px-6 py-6">
-        {data && <DuePie stats={data.dueStats} selected={filter.due} onSelect={(due) => changeFilter({ ...filter, due })} />}
+        {data && (
+          <DuePie
+            stats={data.dueStats}
+            selected={filter.due}
+            onSelect={(due) => changeFilter({ ...filter, due })}
+            rate={{
+              title: '完成率',
+              done: data.rate.done,
+              total: data.rate.total,
+              doneLabel: '已完成',
+              hint: '已完成＝8D 有實際完成日期；總數依目前篩選（不含完成期限）。',
+            }}
+          />
+        )}
         <ListFilterBar value={filter} onChange={changeFilter} options={data?.options} occurredLabel="測試時間" groupLabel="機種" />
         {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 

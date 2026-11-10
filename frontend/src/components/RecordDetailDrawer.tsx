@@ -80,7 +80,7 @@ export function RecordDetailDrawer({ target, onClose }: { target: RecordTarget; 
   const heading = repair
     ? `維修 ${repair.serialNo ?? ''}`
     : complaint
-      ? `客訴 ${complaint.reportNo && complaint.reportNo !== 'NA' ? complaint.reportNo : `序號 ${complaint.seq ?? ''}`}`
+      ? `客訴 ${complaint.reportNo && complaint.reportNo !== 'NA' ? complaint.reportNo : `序號 ${complaint.serialNo ?? complaint.seq ?? ''}`}`
       : '明細'
 
   return (

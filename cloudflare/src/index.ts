@@ -19,6 +19,8 @@ export interface Env {
   QCM_JWT_SECRET?: string
   QCM_ADMIN_USERNAME?: string
   QCM_ADMIN_PASSWORD?: string
+  /** 一次性：設為 1 時容器啟動會把 QCM_ADMIN_USERNAME 的密碼重設為 QCM_ADMIN_PASSWORD；用完要刪除 */
+  QCM_ADMIN_RESET?: string
 }
 
 export class Backend extends Container<Env> {
@@ -45,6 +47,7 @@ export class Backend extends Container<Env> {
       ...(env.QCM_JWT_SECRET ? { QCM_JWT_SECRET: env.QCM_JWT_SECRET } : {}),
       ...(env.QCM_ADMIN_USERNAME ? { QCM_ADMIN_USERNAME: env.QCM_ADMIN_USERNAME } : {}),
       ...(env.QCM_ADMIN_PASSWORD ? { QCM_ADMIN_PASSWORD: env.QCM_ADMIN_PASSWORD } : {}),
+      ...(env.QCM_ADMIN_RESET ? { QCM_ADMIN_RESET: env.QCM_ADMIN_RESET } : {}),
     }
   }
 

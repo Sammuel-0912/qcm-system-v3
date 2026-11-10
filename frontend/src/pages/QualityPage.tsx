@@ -441,6 +441,7 @@ export default function QualityPage() {
             selected={state.target}
             onSelect={(target) => setState((s) => ({ ...s, target }))}
             reloadKey={reloadKey}
+            kpovLevels={stationKpov ? Object.fromEntries(stationKpov.stations.map((s) => [s.equipmentCode, s.counts])) : null}
           />
         </section>
 

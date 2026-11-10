@@ -1038,15 +1038,24 @@ def _import_complaints(session, workbook, batch, report, previous, carry) -> Non
     named = _named_columns(head, M.COMPLAINT_NAMED_COLUMNS)
 
     count = 0
-    for row in rows[M.COMPLAINT_HEADER_ROWS - 2 :]:
-        seq = _to_int(row[0]) if row else None
-        if seq is None:
+    for row_no, row in enumerate(rows[M.COMPLAINT_HEADER_ROWS - 2 :], start=M.COMPLAINT_HEADER_ROWS - 1):
+        # 序號欄：數字流水號，或 13 碼英數交雜的產品序號（v2.17）
+        first = row[0] if row else None
+        seq = _to_int(first)
+        serial = None if seq is not None else _product_serial(first)
+        if seq is None and serial is None:
+            text_ = _to_text(first)
+            if text_ and _looks_like_serial(text_):
+                report.warnings.append(
+                    f"客訴報表第 {row_no} 列序號「{text_}」不是 13 碼英數產品序號，也不是數字流水號，未匯入"
+                )
             continue  # 表頭、範本空列、右側偵測字典列
         data: dict[str, Any] = {
             field: _clean_text(row[i]) if i < len(row) else None for field, i in index.items()
         }
         data.update(_eight_d_values(row, index))
         data["seq"] = seq
+        data["serial_no"] = serial
         data["complained_at"] = _to_datetime(row[index["complained_at"]]) or _complaint_dates(
             row[index["complained_at"]]
         )[0]
@@ -1056,6 +1065,24 @@ def _import_complaints(session, workbook, batch, report, previous, carry) -> Non
         session.add(FactComplaint(batch_id=batch.id, **data))
         count += 1
     report.row_counts["complaints"] = count
+
+
+PRODUCT_SERIAL_LENGTH = 13
+
+
+def _product_serial(value: Any) -> str | None:
+    """產品序號：13 碼、只含英文字母與數字、且英數交雜（例 IOV25C75081W0）。統一轉大寫。"""
+    text_ = (_to_text(value) or "").strip().upper()
+    if len(text_) == PRODUCT_SERIAL_LENGTH and _looks_like_serial(text_):
+        return text_
+    return None
+
+
+def _looks_like_serial(text_: str) -> bool:
+    """看起來像產品序號（英數交雜、沒有其他字元），用來對長度不對的序號發出警告。"""
+    return bool(re.fullmatch(r"[A-Za-z0-9]+", text_)) and bool(re.search(r"[A-Za-z]", text_)) and bool(
+        re.search(r"\d", text_)
+    )
 
 
 def _clean_text(value: Any) -> str | None:

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { api, type ChangeWindow } from '../api/client'
+import { api, type ChangeWindow, type StationLevelCounts } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
 import { RISK_STATIONS } from '../layoutConfig'
 
@@ -11,6 +11,14 @@ type Props = {
   selected: string | null
   onSelect: (targetId: string | null) => void
   reloadKey?: number
+  /** 「站別 Level 分佈」的各站 KPOV 個數（依設備代碼），決定卡片顏色 */
+  kpovLevels: Record<string, StationLevelCounts> | null
+}
+
+/** 該站 KPOV 出現過的最高 Level；沒有 KPOV 時為 null */
+function highestLevel(counts: StationLevelCounts | undefined): number | null {
+  for (const level of [3, 2, 1, 0]) if ((counts?.[String(level)] ?? 0) > 0) return level
+  return null
 }
 
 const WINDOW_HINT: Record<ChangeWindow, string> = {
@@ -23,11 +31,11 @@ const WINDOW_HINT: Record<ChangeWindow, string> = {
 type Risk = Awaited<ReturnType<typeof api.stationRisk>>
 
 /**
- * 站別風險地圖：每站一張卡片，底色依期間內維修／客訴「發生當時」最嚴重的 Level，
- * 與象限圖同一套 Level 顏色（Level 3＝高風險）；期間內都沒有＝Level 0 的綠色。
+ * 站別風險地圖：每站一張卡片，底色＝上方「站別 Level 分佈」該站出現過的最高 Level（v2.15；例：鎖 Fuse 有 Level 3 的 KPOV 就是 L3 色），
+ * 與象限圖同一套 Level 顏色；該站沒有 KPOV 時為白色。期間內的維修／客訴次數仍以標籤顯示。
  * 點卡片等同點 Layout 熱區（下方趨勢與點檢表切到該站），再點取消。
  */
-export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props) {
+export function StationRiskMap({ window, selected, onSelect, reloadKey, kpovLevels }: Props) {
   const [risk, setRisk] = useState<Risk | null>(null)
 
   useEffect(() => {
@@ -60,8 +68,7 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props)
         {RISK_STATIONS.map((station) => {
           const counts = risk?.stations[station.equipmentCode] ?? { repairs: 0, complaints: 0, worstLevel: null }
           const alert = counts.repairs > 0 || counts.complaints > 0
-          // 有事件但算不出 Level（例：維修的 KPOV 不在 KPOV 庫）時不上色，避免誤判為無風險
-          const level = alert ? counts.worstLevel : 0
+          const level = highestLevel(kpovLevels?.[station.equipmentCode])
           const active = selected === station.targetId
           return (
             <button
@@ -83,7 +90,7 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey }: Props)
                   {station.kind}
                 </span>
                 <span className="text-[11px] font-semibold text-slate-700">
-                  {!alert ? '' : level === 3 ? '高風險・L3' : level !== null ? `L${level}` : 'Level 未知'}
+                  {level === 3 ? '高風險・L3' : level !== null ? `L${level}` : kpovLevels ? '無 KPOV' : ''}
                 </span>
               </span>
               <span className="mt-1.5 block text-sm font-semibold leading-snug text-slate-900">

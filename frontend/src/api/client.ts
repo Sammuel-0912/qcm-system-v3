@@ -13,6 +13,23 @@ export type LevelCounts = {
 
 export type BatchInfo = { id: number; filename: string; importedAt: string | null }
 
+/** 匯入歷程的一筆（一次數據庫 Excel 匯入） */
+export type ImportHistoryRow = BatchInfo & {
+  dataset: string | null
+  plant: string | null
+  factory: string | null
+  line: string | null
+  importedBy: string | null
+  status: 'pending' | 'success' | 'failed'
+  /** 這條線目前生效的批次 */
+  isActive: boolean
+  rowCounts: Record<string, number>
+  warnings: string[]
+  levelEventSummary: { total: number; escalated: number; improved: number; unchanged: number } | null
+  unmatchedCount: number
+  skippedRepairCount: number
+}
+
 export type LineInheritance = {
   inherited: boolean
   inheritedFrom: string | null
@@ -165,6 +182,8 @@ export type ListFilter = {
 
 export type FilteredPaged<T> = Paged<T> & {
   dueStats: DueStats
+  /** 完成率（製程：8D 有實際完成）／結案率（客訴：改善判定 OK）；與圓餅同一組篩選結果 */
+  rate: { done: number; total: number }
   options: { groups: string[]; stations: string[]; kpovs: { value: string; label: string }[] }
 }
 
@@ -301,6 +320,8 @@ export type ProcessSummary = Paged<MeasureRow> & {
 export type Complaint = {
   id: number
   seq: number | null
+  /** 產品序號（客訴報表序號欄填 13 碼英數時，v2.17）；有值時取代流水號顯示 */
+  serialNo: string | null
   reportNo: string | null
   complainedAt: string | null
   customer: string | null
@@ -481,7 +502,12 @@ export type PhotoInspection = {
   /** 目前點檢項目的 KPIV(x) 管控等級 */
   kpivControlLevel: string | null
   status: 'ok' | 'warn'
+  /** 回報異常時填的說明（點檢後不可改） */
   note: string | null
+  /** 緊急措施：工程師在點檢看板補填，可修改 */
+  emergencyMeasure: string | null
+  emergencyMeasureBy: string | null
+  emergencyMeasureAt: string | null
   photoUrl: string
   inspectedAt: string
 }
@@ -491,6 +517,9 @@ export type PhotoInspection = {
 export type CheckTrend = {
   days: number
   since: string
+  /** 起算日（YYYY-MM-DD）：之前為試運行，異常次數與漏點檢都不算 */
+  countFrom: string
+  excludeOffDays: boolean
   trackingFrom: string | null
   series: { date: string; warn: number; inspected: number; missed: number; expected: number }[]
   items: {
@@ -699,12 +728,23 @@ export const api = {
     return body as { id: number; status: string; photoUrl: string; inspectedAt: string }
   },
   /** 點檢儀表板：拍照點檢紀錄（新到舊）。start／end 傳帶時區的 ISO 時間 */
-  photoInspections: (p: { equipmentCode?: string; start?: string; end?: string }) =>
+  photoInspections: (p: { equipmentCode?: string; start?: string; end?: string; status?: 'ok' | 'warn' }) =>
     get<{ total: number; items: PhotoInspection[] }>('/check-inspections', p),
-  photoInspectionStats: () => get<PhotoInspectionStat[]>('/check-inspections/stats'),
-  checkTrend: (days: number) => get<CheckTrend>('/check-inspections/trend', { days: String(days) }),
+  /** excludeOffDays：不算星期日（預設）；看板的勾選框同時控制卡片與趨勢圖 */
+  photoInspectionStats: (excludeOffDays = true) =>
+    get<PhotoInspectionStat[]>('/check-inspections/stats', { excludeOffDays: String(excludeOffDays) }),
+  checkTrend: (days: number, excludeOffDays = true) =>
+    get<CheckTrend>('/check-inspections/trend', { days: String(days), excludeOffDays: String(excludeOffDays) }),
+  saveCheckEmergencyMeasure: (id: number, emergencyMeasure: string) =>
+    send<PhotoInspection>('PUT', `/check-inspections/${id}/emergency-measure`, { emergencyMeasure }, '儲存失敗'),
   /** 匯出含照片的 Excel；篩選條件同列表，baseUrl 用來組出可點的原圖連結 */
-  photoInspectionExportUrl: (p: { equipmentCode?: string; start?: string; end?: string; baseUrl?: string }) => {
+  photoInspectionExportUrl: (p: {
+    equipmentCode?: string
+    start?: string
+    end?: string
+    status?: 'ok' | 'warn'
+    baseUrl?: string
+  }) => {
     const search = new URLSearchParams()
     for (const [key, value] of Object.entries(p)) if (value) search.set(key, value)
     const query = search.toString()
@@ -739,6 +779,8 @@ export const api = {
     return body
   },
   clearCountImport: () => send<{ deleted: number }>('DELETE', '/check-inspections/count-import', undefined, '清除失敗'),
+  /** 匯入歷程（v2.16）：每次匯入數據庫 Excel 一筆，新到舊 */
+  importHistory: () => get<ImportHistoryRow[]>('/import/history'),
   async import(file: File) {
     const form = new FormData()
     form.append('file', file)

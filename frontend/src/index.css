@@ -24,14 +24,7 @@ body {
 .qcm-marquee {
   animation: qcm-marquee 30s linear infinite;
 }
+/* 系統開了「減少動態效果」也照常播放（使用者 2026-11-10 要求：廣播一定要跑）；滑鼠移上去暫停即可閱讀 */
 .qcm-marquee-viewport:hover .qcm-marquee {
   animation-play-state: paused;
-}
-@media (prefers-reduced-motion: reduce) {
-  .qcm-marquee {
-    animation: none;
-  }
-  .qcm-marquee-viewport {
-    overflow-x: auto;
-  }
 }

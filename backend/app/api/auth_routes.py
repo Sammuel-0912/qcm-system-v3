@@ -239,11 +239,19 @@ def reset_password(user_id: int, data: PasswordReset, actor: User = Depends(requ
 
 
 def ensure_bootstrap_admin(session: Session) -> None:
-    """還沒有任何最高權限管理者時，依 QCM_ADMIN_USERNAME／QCM_ADMIN_PASSWORD 建立第一位。"""
-    if session.scalar(select(func.count()).select_from(User).where(User.role == A.ROLE_SUPER)):
-        return
+    """還沒有任何最高權限管理者時，依 QCM_ADMIN_USERNAME／QCM_ADMIN_PASSWORD 建立第一位。
+
+    QCM_ADMIN_RESET=1（一次性，用完要移除）：不論是否已有管理者，都把 QCM_ADMIN_USERNAME 這個帳號
+    的密碼重設為 QCM_ADMIN_PASSWORD，並設為啟用中的最高權限管理者；帳號不存在就建立。
+    給只有一位管理者又忘記密碼、或主機上無法開網頁重設時使用（Cloudflare 容器沒有 shell 可進）。
+    """
     username = os.getenv("QCM_ADMIN_USERNAME", "").strip()
     password = os.getenv("QCM_ADMIN_PASSWORD", "")
+    if os.getenv("QCM_ADMIN_RESET", "").strip().lower() in ("1", "true", "yes"):
+        _reset_admin(session, username, password)
+        return
+    if session.scalar(select(func.count()).select_from(User).where(User.role == A.ROLE_SUPER)):
+        return
     if not username or not password:
         log.warning("尚無最高權限管理者：請設定 QCM_ADMIN_USERNAME 與 QCM_ADMIN_PASSWORD 後重啟，系統才能登入")
         return
@@ -256,3 +264,25 @@ def ensure_bootstrap_admin(session: Session) -> None:
                      role=A.ROLE_SUPER, plant=None))
     session.commit()
     log.warning("已建立最高權限管理者帳號：%s", username)
+
+
+def _reset_admin(session: Session, username: str, password: str) -> None:
+    if not username or not password:
+        log.error("QCM_ADMIN_RESET=1 但沒有設定 QCM_ADMIN_USERNAME／QCM_ADMIN_PASSWORD，未重設")
+        return
+    try:
+        A.check_password_policy(password)
+    except ValueError as exc:
+        log.error("QCM_ADMIN_PASSWORD 不符規則（%s），未重設管理者", exc)
+        return
+    user = session.scalar(select(User).where(User.username == username))
+    if user is None:
+        session.add(User(username=username, display_name="系統管理員", password_hash=A.hash_password(password),
+                         role=A.ROLE_SUPER, plant=None))
+        log.warning("QCM_ADMIN_RESET：已建立最高權限管理者帳號：%s", username)
+    else:
+        user.password_hash = A.hash_password(password)
+        user.role, user.plant, user.is_active = A.ROLE_SUPER, None, True
+        user.token_version += 1  # 舊的登入一律失效
+        log.warning("QCM_ADMIN_RESET：已重設 %s 的密碼並設為最高權限管理者；請移除 QCM_ADMIN_RESET 後重新部署", username)
+    session.commit()
