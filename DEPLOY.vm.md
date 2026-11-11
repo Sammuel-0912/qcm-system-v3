@@ -79,16 +79,79 @@ docker compose up -d --no-build            # --no-build：直接用載入的映�
 docker compose ps                          # 三個服務都顯示 healthy 即完成
 ```
 
-### A-4. 之後更新版本
+### A-4. 之後更新版本（保留現有資料）
 
-開發機重做 A-1，把新的 `qcm-images.tar.gz`（以及有變動的 `docker-compose.yml`）傳上去，然後：
+**資料不在容器裡**，而是在兩個 Docker volume：資料庫 `pgdata`、照片 `apidata`。換新版映像、重建容器都不會動到 volume，所以舊資料會留著。
+正在跑的那一版**不需要先停、也不需要先下任何指令**，只要遵守下面三點：
+
+1. **在同一個資料夾（例：`~/qcm`）執行**。volume 名稱的前綴是資料夾名（`qcm_pgdata`、`qcm_apidata`），換資料夾等於換一組空的 volume，畫面會變成沒有資料。
+2. **不要覆蓋 VM 上的 `.env`**（裡面是資料庫密碼與 JWT 金鑰）。只傳 `.env.example`，有新變數再手動補進 `.env`。
+3. **不要執行 `docker compose down -v`**。`-v` 會刪掉 volume，也就是刪掉全部資料。
+
+三個指令各在哪裡執行：
+
+| 指令 | 在哪裡 | 用途 |
+|---|---|---|
+| `docker compose build` | **開發機**（A-1） | 用原始碼建出新版映像。VM 上沒有原始碼，不用執行 |
+| `docker load -i qcm-images.tar` | VM | 載入新版映像（取代同名的 `qcm-api:latest` 等） |
+| `docker compose up -d --no-build` | VM | 用新映像重建有變動的容器，volume 照舊掛回去 |
+
+#### 步驟
+
+**開發機**：重做 A-1（`git pull` → `docker compose build` → `docker save`），把新的映像檔和 `docker-compose.yml`、`.env.example` 傳到 VM 的**同一個資料夾**：
+
+```bash
+scp qcm-images.tar docker-compose.yml .env.example user@<VM IP>:~/qcm/
+```
+
+> `docker-compose.yml` 會被覆蓋沒關係（裡面沒有密碼）；`.env` 不要傳。
+
+**VM**：
 
 ```bash
 cd ~/qcm
-gunzip -c qcm-images.tar.gz | docker load
-docker compose up -d --no-build            # 只會重建映像有變的容器，資料保留
-docker image prune -f                      # 清掉舊版映像
+
+# 1) 確認現在的資料在哪個 volume（應看到 qcm_pgdata、qcm_apidata）
+docker volume ls | grep qcm
+
+# 2) 保險起見先備份（資料庫＋照片），升級出問題可以還原
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > qcm-db-$(date +%F).sql.gz
+docker run --rm -v qcm_apidata:/data -v "$PWD":/backup alpine tar czf /backup/qcm-uploads-$(date +%F).tar.gz -C /data .
+ls -lh qcm-db-*.sql.gz qcm-uploads-*.tar.gz   # 兩個檔案都不能是 0 位元組
+
+# 3) 留一份舊版映像，新版有問題時可以退回
+docker tag qcm-api:latest qcm-api:prev
+docker tag qcm-web:latest qcm-web:prev
+
+# 4) 載入新版映像並重建容器（資料保留）
+docker load -i qcm-images.tar              # .tar.gz 的話：gunzip -c qcm-images.tar.gz | docker load
+docker compose up -d --no-build
+docker compose ps                          # 三個服務都 healthy
+docker compose logs --tail 50 api          # 看有沒有錯誤；新欄位會在啟動時自動補上
 ```
+
+> 第 2 步的 `alpine` 映像 VM 上若沒有（離線環境抓不到），改用已經有的映像：
+> `docker run --rm -v qcm_apidata:/data -v "$PWD":/backup postgres:16-alpine tar czf /backup/qcm-uploads-$(date +%F).tar.gz -C /data .`
+
+升級完打開網頁登入，確認舊的 KPOV、點檢紀錄與照片都還在，再清掉不用的映像：
+
+```bash
+docker image prune -f                      # 只清沒有名稱的舊映像；:prev 會保留到你刪掉為止
+```
+
+#### 新版有問題時退回舊版
+
+資料表結構只會新增可空的欄位，舊版程式照樣能讀，所以直接換回舊映像即可：
+
+```bash
+docker tag qcm-api:prev qcm-api:latest
+docker tag qcm-web:prev qcm-web:latest
+docker compose up -d --no-build
+```
+
+確認新版沒問題後可刪掉舊版：`docker rmi qcm-api:prev qcm-web:prev`。
+
+資料真的壞掉才需要用第 2 步的備份還原（見下方「還原資料庫」）。
 
 > **從沒有登入功能的舊版升級時**（VM 上已經跑過舊版）：
 > 1. `docker-compose.yml` 這次有改（api 多了登入用的環境變數），**一定要連同新的 `docker-compose.yml`、`.env.example` 一起傳上去**。
@@ -160,6 +223,7 @@ docker compose logs api | grep -E "已建立最高權限管理者|未設定 QCM_
 | `QCM_SITE_UTC_OFFSET` | `8` | 廠區時區，決定 Level 3 點檢的日班／夜班切分 |
 | `QCM_JWT_SECRET` | （必填） | 登入權杖的簽章金鑰，用長隨機字串（`openssl rand -hex 32`）。沒設定時每次重啟都要重新登入；改掉它所有人都會被登出 |
 | `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD` | （必填） | 第一位最高權限管理者，密碼至少 8 碼。**只在資料庫還沒有最高權限管理者時建立**；之後改密碼請從網頁改，改 `.env` 不會生效 |
+| `QCM_ADMIN_RESET` | （空） | 一次性：設為 `1` 時啟動會把 `QCM_ADMIN_USERNAME` 的密碼重設為 `QCM_ADMIN_PASSWORD`（忘記密碼用）。用完一定要拿掉 |
 
 > PostgreSQL 只在 volume 第一次建立時套用帳密。之後要改密碼，需在資料庫內 `ALTER USER`，
 > 或備份後刪除 `pgdata` volume 重建。
@@ -183,7 +247,7 @@ docker compose down                        # 停止（資料保留）
 
 ```bash
 # 資料庫
-docker compose exec -T db pg_dump -U qcm qcm | gzip > qcm-db-$(date +%F).sql.gz
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > qcm-db-$(date +%F).sql.gz
 
 # 照片與上傳檔
 docker run --rm -v qcm_apidata:/data -v "$PWD":/backup alpine \
@@ -195,7 +259,7 @@ docker run --rm -v qcm_apidata:/data -v "$PWD":/backup alpine \
 ### 還原資料庫
 
 ```bash
-gunzip -c qcm-db-2026-10-15.sql.gz | docker compose exec -T db psql -U qcm qcm
+gunzip -c qcm-db-2026-10-15.sql.gz | docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'
 ```
 
 ### 注意
@@ -203,5 +267,6 @@ gunzip -c qcm-db-2026-10-15.sql.gz | docker compose exec -T db psql -U qcm qcm
 - **`docker compose down -v` 會刪除所有資料**（含資料庫與照片），除非要整個重來，否則不要加 `-v`。
 - `api` 只能跑單一程序：線上人數存在程序記憶體裡，多開會各算各的。
 - 前端的 `/api/` 由 nginx 轉發，瀏覽器只需連 `WEB_PORT`，不會有跨網域問題。
-- 忘記最高權限管理者密碼時，改 `.env` 不會生效（帳號已存在）。請由另一位最高權限管理者在「使用者管理」重設；
-  若只有一位，需進資料庫刪除該帳號後重啟 api，系統會依 `.env` 重新建立。
+- 忘記最高權限管理者密碼時，單改 `.env` 的密碼不會生效（帳號已存在）。可由另一位最高權限管理者在「使用者管理」重設；
+  若只有一位：在 `.env` 設好 `QCM_ADMIN_USERNAME`／`QCM_ADMIN_PASSWORD`，再加一行 `QCM_ADMIN_RESET=1`，執行 `docker compose up -d --no-build`，
+  啟動時會把該帳號密碼重設為 `.env` 的值。登入後**務必把 `QCM_ADMIN_RESET=1` 刪掉**再 `docker compose up -d --no-build`，否則每次重啟都會重設。

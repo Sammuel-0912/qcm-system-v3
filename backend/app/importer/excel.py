@@ -776,6 +776,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     if not has_improve_time:
         report.warnings.append("修護報表沒有「改善時間」欄，改善事件暫以匯入時間代替（舊版檔案）")
     incoming: dict[tuple, dict] = {}
+    incoming_rows: dict[tuple, int] = {}  # 維修鍵 -> Excel 列號（對不到 KPOV 庫的警告用）
     for row_no, row in enumerate(rows, start=2):
         data = _row_to_dict(row, idx)
         if not data.get("equipment_code") and not data.get("kpov_no"):
@@ -817,6 +818,7 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
                 f"修護報表第 {row_no} 列與前面的紀錄重複（序號 {values['serial_no']}），以第 {row_no} 列為準"
             )
         incoming[key] = values
+        incoming_rows[key] = row_no
 
     # 與前一批次合併
     merged: dict[tuple, dict] = {}
@@ -848,12 +850,44 @@ def _import_all(session: Session, workbook, batch: ImportBatch, report: ImportRe
     report.row_counts["repairsUpdated"] = updated_count
     report.row_counts["repairsUnchanged"] = unchanged_count
     report.row_counts["repairsCarried"] = len(merged) - len(incoming)
+    _warn_unmatched_repairs(merged, incoming_rows, kpov_keys, report)
 
     # 8) 等級異動事件
     derive_level_events(
         session, batch, repairs, method_scores, report, improve_time_fallback=not has_improve_time
     )
     report.row_counts["levelEvents"] = len(report.level_events)
+
+
+def _warn_unmatched_repairs(
+    merged: dict[tuple, dict], rows: dict[tuple, int], kpov_keys: set, report: ImportReport
+) -> None:
+    """維修的（KPOV 編號, 設備ID）在 KPOV 庫找不到時，該筆算不出 Level（清單顯示 －），逐筆提出警告。
+
+    rows 有列號的是這次檔案裡的維修；沒有的是沿用前一批次的舊紀錄（v2.18）。
+    """
+    unmatched: dict[tuple[str, str], int] = {}
+    for key, values in merged.items():
+        pair = (values.get("kpov_no"), values.get("equipment_code"))
+        if pair in kpov_keys:
+            continue
+        unmatched[pair] = unmatched.get(pair, 0) + 1
+        where = f"修護報表第 {rows[key]} 列" if key in rows else "沿用前一批次的維修紀錄"
+        station = f" · {values['station']}" if values.get("station") else ""
+        report.warnings.append(
+            f"{where}（序號 {values.get('serial_no') or '（無序號）'}{station}）的 KPOV {pair[0]} × 設備 {pair[1]} "
+            "在 KPOV 庫中找不到，Level 無法計算；請修正修護報表的 KPOV 編號／設備ID，或在 KPOV 庫補上這個組合"
+        )
+    for (kpov_no, code), n in sorted(unmatched.items()):
+        report.unmatched_keys.append(
+            {
+                "table": "fact_repair",
+                "kpovNo": kpov_no,
+                "equipmentCode": code,
+                "count": n,
+                "reason": "維修的 KPOV × 設備 組合在 KPOV 庫中不存在",
+            }
+        )
 
 
 def _period_from(value: str | None) -> str | None:
