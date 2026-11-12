@@ -35,7 +35,8 @@ def test_jwt_issue_tamper_and_expiry():
     token = A.issue_token(7, 3)
     payload = A.decode_token(token)
     assert payload["sub"] == "7" and payload["ver"] == 3
-    assert A.decode_token(token[:-2] + ("A" if token[-1] != "A" else "B") + token[-1]) is None
+    # 竄改簽章倒數第二個字元（換成一定不同的字元；原本固定換成 "A"，剛好是 "A" 時等於沒改，約 1/64 機率誤判）
+    assert A.decode_token(token[:-2] + ("A" if token[-2] != "A" else "B") + token[-1]) is None
     old = A.issue_token(7, 3, now=dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=A.TOKEN_HOURS + 1))
     assert A.decode_token(old) is None
     assert A.decode_token("not-a-jwt") is None

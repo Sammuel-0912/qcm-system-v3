@@ -744,19 +744,31 @@ def test_window_filters_quadrant_and_tracking(client):
     assert full["scope"]["total"] == 331
     assert full["start"] is None
 
-    # 有等級事件的 KPOV：以 history 逐筆推算「某時點」的 Level，作為期初分佈的獨立對照
+    # 有等級事件的 KPOV（維修或計入等級的 PCN，v2.19）：以 history 逐筆推算「某時點」的 Level，作為期初分佈的獨立對照
     repairs = client.get("/api/v1/repairs", params={"pageSize": 50}).json()["items"]
+    pcn_keys = {
+        (c["kpovNo"], c["equipmentCode"])
+        for c in client.get("/api/v1/kpov", params={"pageSize": 500}).json()["items"]
+        if c.get("kpovNo") and c.get("equipmentCode")
+    }
     histories = []
-    for key in {(r["kpovNo"], r["equipmentCode"]) for r in repairs if r["kpovNo"] and r["equipmentCode"]}:
+    for key in {(r["kpovNo"], r["equipmentCode"]) for r in repairs if r["kpovNo"] and r["equipmentCode"]} | pcn_keys:
         res = client.get(f"/api/v1/kpov/{key[0]}/{key[1]}/history")
-        if res.status_code == 200 and res.json()["events"]:
-            histories.append(res.json())
+        if res.status_code != 200:
+            continue
+        h = res.json()
+        steps = [(at(e["effectiveAt"]), 1, e["levelAfter"]) for e in h["events"]]
+        # PCN 與維修同時刻時 PCN 在前（rank 0）
+        steps += [(at(c["effectiveAt"]), 0, c["counted"]["levelAfter"]) for c in h["changes"] if c.get("counted")]
+        if steps:
+            h["steps"] = sorted(steps, key=lambda t: (t[0], t[1]))
+            histories.append(h)
 
     def level_at(history, when):
         level = history["baseline"]["level"]
-        for e in history["events"]:
-            if at(e["effectiveAt"]) <= when:
-                level = e["levelAfter"]
+        for effective, _, after in history["steps"]:
+            if effective <= when:
+                level = after
         return level
 
     for window, days in (("day", 1), ("week", 7), ("month", 30), ("year", 365)):

@@ -139,12 +139,28 @@ function parseLevel(value: string | null): number | null {
   return match ? Number(match[0]) : null
 }
 
-/** PCN / ECN 變更節點：只標示時間與前後狀態，不參與等級計算 */
+/** PCN / ECN 變更節點。PCN 計入等級（v2.19）：顯示系統串接後的前後等級，PCN 表上的「切入前」不同時另外註明 */
 function ChangeNode({ change }: { change: ChangeRecord }) {
   const isPcn = change.kind === 'PCN'
-  const before = parseLevel(change.levelBefore)
-  const after = parseLevel(change.levelAfter)
-  const hasScores = change.smallYBefore || change.bigYBefore || change.smallYAfter || change.bigYAfter
+  const counted = isPcn ? change.counted ?? null : null
+  const statedBefore = parseLevel(change.levelBefore)
+  const before = counted ? counted.levelBefore : statedBefore
+  const after = counted ? counted.levelAfter : parseLevel(change.levelAfter)
+  const scores = counted
+    ? {
+        smallYBefore: counted.smallYBefore,
+        bigYBefore: counted.bigYBefore,
+        smallYAfter: counted.smallYAfter,
+        bigYAfter: counted.bigYAfter,
+      }
+    : change
+  const hasScores = scores.smallYBefore || scores.bigYBefore || scores.smallYAfter || scores.bigYAfter
+  const arrow =
+    counted?.transition === 'IMPROVED'
+      ? { symbol: '↓', className: 'text-emerald-600' }
+      : counted?.transition === 'ESCALATED'
+        ? { symbol: '↑', className: 'text-red-600' }
+        : { symbol: '→', className: 'text-slate-400' }
   return (
     <li className="relative">
       <span
@@ -164,9 +180,14 @@ function ChangeNode({ change }: { change: ChangeRecord }) {
         {(before !== null || after !== null) && (
           <>
             <Level level={before} />
-            <span className="text-slate-400">→</span>
+            <span className={`font-bold ${arrow.className}`}>{arrow.symbol}</span>
             <Level level={after} />
           </>
+        )}
+        {counted && (
+          <span className="rounded border border-sky-300 px-1 text-[10px] text-sky-700" title="PCN 切入後的偵測度計入等級">
+            計入現況
+          </span>
         )}
         <span className="ml-auto text-xs tabular-nums text-slate-400">
           {change.effectiveAt?.slice(0, 10) ?? '日期未填'}
@@ -175,10 +196,15 @@ function ChangeNode({ change }: { change: ChangeRecord }) {
       {change.content && <p className="mt-1.5 text-sm text-slate-700">{change.content}</p>}
       {hasScores && (
         <div className="mt-2 rounded-md bg-slate-50 p-2 font-mono text-xs tabular-nums text-slate-600">
-          y:{change.smallYBefore ?? '—'} Y:{change.bigYBefore ?? '—'}
+          y:{scores.smallYBefore ?? '—'} Y:{scores.bigYBefore ?? '—'}
           <span className="mx-1.5 text-slate-400">→</span>
-          y:{change.smallYAfter ?? '—'} Y:{change.bigYAfter ?? '—'}
+          y:{scores.smallYAfter ?? '—'} Y:{scores.bigYAfter ?? '—'}
         </div>
+      )}
+      {counted && statedBefore !== null && statedBefore !== counted.levelBefore && (
+        <p className="mt-1 text-xs text-amber-700">
+          PCN 表的切入前填 Level {statedBefore}（y:{change.smallYBefore ?? '—'} Y:{change.bigYBefore ?? '—'}），以系統當時的等級為準
+        </p>
       )}
     </li>
   )
@@ -193,6 +219,7 @@ export function LevelTimeline({ data }: Props) {
   const showSiteName = Boolean(siteName && siteName !== data.station)
 
   // 時間軸由新到舊：預計改善 → 現況 → 維修事件與 PCN/ECN 依日期交錯（倒序）→ 基準。
+  // PCN 計入等級（v2.19）的事件不在 events 裡，而是併在對應 PCN 節點的 counted。
   // 預計改善（改善時間在未來）放在「現況」之上，表示尚未發生。
   // 同一天時 PCN/ECN 排在維修事件之後（較舊）：變更先切入，之後才觀察到不良。
   type Node =

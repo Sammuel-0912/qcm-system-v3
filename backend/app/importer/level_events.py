@@ -10,15 +10,20 @@
             只有完全沒有此欄的舊版檔案，才退回以匯入批次時間代替。
 
 事件以 (維修序號, KPOV編號, 設備代碼, 事件類型) 為自然鍵去重（REQ-LIFE-05）。
+
+PCN（v2.19，spec §25）：PCN 紀錄的「切入後」小y／大Y 也產生一筆事件，生效時間 = 切入時間，
+與維修事件一起依時間排序串接前後等級，現況取最後一筆。事件的 note 記 "PCN#<變更紀錄 id>"，
+時間軸用它把事件對回 PCN 紀錄。同一時刻的排序：PCN → DEGRADE → IMPROVE（變更先切入，之後才觀察到不良）。
 """
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import FactKpov, FactLevelEvent, FactRepair, ImportBatch
+from ..models import FactChangeRecord, FactKpov, FactLevelEvent, FactRepair, ImportBatch
 from ..services.level import classify_transition, compute_level
 
 
@@ -34,6 +39,47 @@ def _resolve(method: str | None, method_scores: dict[str, int]) -> tuple[str, in
     if name not in method_scores:
         return None
     return name, method_scores[name]
+
+
+_EVENT_RANK = {"PCN": 0, "DEGRADE": 1, "IMPROVE": 2}
+
+
+def _pcn_axis(value: str | None, method_scores: dict[str, int], by_score: dict[int, list[str]]) -> tuple[str, int] | None:
+    """PCN 的偵測度欄：通常是分數（"5.0"），也接受偵測方式名稱。回傳（顯示用方式名稱, 分數）。"""
+    if value is None or str(value).strip() == "":
+        return None
+    text_ = str(value).strip()
+    try:
+        score = int(float(text_))
+    except ValueError:
+        return _resolve(text_, method_scores)
+    if not 1 <= score <= 10:
+        return None
+    names = by_score.get(score, [])
+    return (names[0] if len(names) == 1 else f"偵測度 {score}"), score
+
+
+def _pcn_level_text(value: str | None) -> int | None:
+    match = re.search(r"\d", value or "")
+    return int(match.group()) if match else None
+
+
+def _pcn_targets(record: FactChangeRecord, baseline: dict[tuple[str, str], FactKpov]) -> list[tuple[str, str]]:
+    """PCN 對應的 KPOV：有設備ID 以（KPOV 編號, 設備ID），沒有則以（KPOV 編號, 站別）——與時間軸相同（§13.8）。"""
+    if not record.kpov_no:
+        return []
+    if record.equipment_code:
+        key = (record.kpov_no, record.equipment_code)
+        return [key] if key in baseline else []
+    if not record.station:
+        return []
+    return [key for key, kpov in baseline.items() if key[0] == record.kpov_no and kpov.station == record.station]
+
+
+def _pcn_label(record: FactChangeRecord, kpov: FactKpov | None) -> str:
+    day = record.effective_at.date().isoformat() if record.effective_at else "日期未填"
+    station = (kpov.station if kpov else None) or record.station or ""
+    return f"PCN（{day}）{station} · {record.kpov_no} × {record.equipment_code or '—'}"
 
 
 def derive_level_events(
@@ -131,14 +177,60 @@ def derive_level_events(
                 }
             )
 
+    # PCN：切入後的偵測度計入等級（v2.19）
+    by_score: dict[int, list[str]] = {}
+    for name, score in method_scores.items():
+        by_score.setdefault(score, []).append(name)
+    pcn_records = session.scalars(
+        select(FactChangeRecord)
+        .where(FactChangeRecord.batch_id == batch.id, FactChangeRecord.kind == "PCN")
+        .order_by(FactChangeRecord.effective_at, FactChangeRecord.id)
+    ).all()
+    for record in pcn_records:
+        targets = _pcn_targets(record, baseline)
+        if not targets or record.effective_at is None:
+            continue
+        small = _pcn_axis(record.small_y_after, method_scores, by_score)
+        big = _pcn_axis(record.big_y_after, method_scores, by_score)
+        if small is None or big is None:
+            report.warnings.append(
+                f"{_pcn_label(record, baseline.get(targets[0]))}：切入後偵測度未填或無法辨識，未計入等級"
+            )
+            continue
+        level_after = compute_level(small[1], big[1])
+        if level_after is None:
+            continue
+        small_before = _pcn_axis(record.small_y_before, method_scores, by_score)
+        big_before = _pcn_axis(record.big_y_before, method_scores, by_score)
+        stated_before = (
+            compute_level(small_before[1], big_before[1])
+            if small_before and big_before
+            else _pcn_level_text(record.level_before)
+        )
+        for key in targets:
+            candidates.append(
+                {
+                    "key": key,
+                    "pcn": record,
+                    "event_type": "PCN",
+                    "effective_at": record.effective_at,
+                    "small": small,
+                    "big": big,
+                    "level_after": level_after,
+                    "stated_before": stated_before,
+                }
+            )
+
     # --- 階段二：依生效時間全域排序，串接 before 值 --------------------------
     def order(candidate: dict):
         effective = candidate["effective_at"]
         if effective.tzinfo is None:
             effective = effective.replace(tzinfo=dt.timezone.utc)
-        # 同一時刻時，DEGRADE 先於 IMPROVE；再以維修發生時間與序號穩定排序
-        type_rank = 0 if candidate["event_type"] == "DEGRADE" else 1
-        repair = candidate["repair"]
+        # 同一時刻時：PCN → DEGRADE → IMPROVE；再以維修發生時間與序號（PCN 以紀錄 id）穩定排序
+        type_rank = _EVENT_RANK[candidate["event_type"]]
+        repair = candidate.get("repair")
+        if repair is None:
+            return (effective, type_rank, effective, f"{candidate['pcn'].id:09d}")
         tested = repair.tested_at or effective
         if tested.tzinfo is None:
             tested = tested.replace(tzinfo=dt.timezone.utc)
@@ -158,20 +250,33 @@ def derive_level_events(
             }
         return state[key]
 
+    stated_mismatch: list[str] = []
     for candidate in sorted(candidates, key=order):
         key = candidate["key"]
-        repair = candidate["repair"]
+        repair = candidate.get("repair")
+        pcn = candidate.get("pcn")
         small = candidate["small"]
         big = candidate["big"]
         level_after = candidate["level_after"]
         before = current_state(key)
         transition = classify_transition(before["level"], level_after)
 
+        if pcn is not None:
+            label = _pcn_label(pcn, baseline.get(key))
+            stated = candidate["stated_before"]
+            if stated is not None and before["level"] is not None and stated != before["level"]:
+                stated_mismatch.append(f"{label}（PCN 填 Level {stated}，系統 Level {before['level']}）")
+            if transition == "ESCALATED":
+                report.warnings.append(
+                    f"{label}：切入後 Level {level_after} 比當時的 Level {before['level']} 差，"
+                    "現況會變差，請確認 PCN 的切入後偵測度"
+                )
+
         session.add(
             FactLevelEvent(
                 batch_id=batch.id,
-                kpov_no=repair.kpov_no,
-                equipment_code=repair.equipment_code,
+                kpov_no=key[0],
+                equipment_code=key[1],
                 event_type=candidate["event_type"],
                 effective_at=candidate["effective_at"],
                 small_y_method_before=before["small_y_method"],
@@ -185,22 +290,27 @@ def derive_level_events(
                 big_y_score_after=big[1],
                 level_after=level_after,
                 transition=transition,
-                repair_id=repair.id,
-                repair_serial=repair.serial_no,
-                defect_desc=repair.defect_desc,
-                improvement=repair.improvement if candidate["event_type"] == "IMPROVE" else None,
+                repair_id=repair.id if repair else None,
+                repair_serial=repair.serial_no if repair else None,
+                defect_desc=repair.defect_desc if repair else None,
+                improvement=(
+                    repair.improvement
+                    if repair and candidate["event_type"] == "IMPROVE"
+                    else (pcn.content if pcn else None)
+                ),
+                note=f"PCN#{pcn.id}" if pcn is not None else None,
             )
         )
         report.level_events.append(
             {
-                "kpovNo": repair.kpov_no,
-                "equipmentCode": repair.equipment_code,
+                "kpovNo": key[0],
+                "equipmentCode": key[1],
                 "eventType": candidate["event_type"],
                 "effectiveAt": candidate["effective_at"].isoformat(),
                 "levelBefore": before["level"],
                 "levelAfter": level_after,
                 "transition": transition,
-                "serialNo": repair.serial_no,
+                "serialNo": repair.serial_no if repair else None,
             }
         )
 
@@ -211,5 +321,14 @@ def derive_level_events(
             "big_y_score": big[1],
             "level": level_after,
         }
+
+    if stated_mismatch:
+        # 常見於 KPOV 庫已更新成 PCN 後的偵測度、PCN 表的「切入前」仍是舊值；筆數多，彙總成一則
+        examples = "；".join(stated_mismatch[:5])
+        more = f"…等 {len(stated_mismatch)} 筆" if len(stated_mismatch) > 5 else ""
+        report.warnings.append(
+            f"有 {len(stated_mismatch)} 筆 PCN 的「切入前」等級與系統當時的等級（KPOV 庫基準或之前的維修／PCN）不同，"
+            f"前後等級以系統為準：{examples}{more}"
+        )
 
     session.flush()

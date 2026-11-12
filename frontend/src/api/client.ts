@@ -109,7 +109,7 @@ export type EventItem = {
   kpovName: string | null
   station: string | null
   equipmentCode: string
-  eventType: 'DEGRADE' | 'IMPROVE'
+  eventType: 'DEGRADE' | 'IMPROVE' | 'PCN'
   effectiveAt: string
   levelBefore: number | null
   levelAfter: number
@@ -231,6 +231,8 @@ export type MeasureRow = {
   repairId: number | null
   complaintId: number | null
   occurredAt: string | null
+  /** 等級異動總覽中由 PCN 產生的列（v2.19），沒有 8D 明細可開 */
+  source?: 'PCN'
 }
 
 export type TimedText = { text: string | null; at: string | null }
@@ -396,7 +398,7 @@ export type RepairDetail = {
   improvement: string | null
 }
 
-/** PCN / ECN 變更紀錄：只顯示在時間軸，不影響等級計算 */
+/** PCN / ECN 變更紀錄（時間軸）。v2.19 起 PCN 的切入後偵測度計入等級，結果在 counted；ECN 只供顯示 */
 export type ChangeRecord = {
   kind: 'PCN' | 'ECN'
   effectiveAt: string | null
@@ -410,6 +412,16 @@ export type ChangeRecord = {
   smallYAfter: string | null
   bigYAfter: string | null
   levelAfter: string | null
+  /** PCN 計入等級的結果：前＝當時系統等級，後＝切入後偵測度算出的等級；對不到 KPOV 或偵測度缺值時為 null */
+  counted?: {
+    levelBefore: number | null
+    levelAfter: number
+    transition: 'ESCALATED' | 'IMPROVED' | 'UNCHANGED'
+    smallYBefore: number | null
+    bigYBefore: number | null
+    smallYAfter: number
+    bigYAfter: number
+  } | null
 }
 
 export type CheckStatus = 'ok' | 'warn' | 'overdue' | 'never'
@@ -473,7 +485,7 @@ export type HistoryResponse = {
   targetId: string
   baseline: { smallY: { score: number | null }; bigY: { score: number | null }; level: number | null }
   events: {
-    type: 'DEGRADE' | 'IMPROVE'
+    type: 'DEGRADE' | 'IMPROVE' | 'PCN'
     effectiveAt: string
     transition: string
     levelBefore: number | null

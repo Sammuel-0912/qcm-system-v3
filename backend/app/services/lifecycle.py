@@ -109,8 +109,8 @@ def build_states(
         effective = [e for e in bucket if _event_sort_key(e)[0] <= as_of]
         last = effective[-1] if effective else None
 
-        # 目標口徑：最近一筆 IMPROVE 事件宣告要達到的等級；沒有則同現況
-        target_event = next((e for e in reversed(bucket) if e.event_type == "IMPROVE"), None)
+        # 目標口徑：最近一筆 IMPROVE（或 PCN，v2.19）事件宣告要達到的等級；沒有則同現況
+        target_event = next((e for e in reversed(bucket) if e.event_type in ("IMPROVE", "PCN")), None)
 
         states.append(
             KpovState(

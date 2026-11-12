@@ -10,6 +10,7 @@ NOT NULL 而整批失敗。
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlalchemy import Engine, inspect, text
 
@@ -206,6 +207,61 @@ def _add_missing_columns(engine: Engine) -> list[str]:
     return applied
 
 
+def _widen_event_types(engine: Engine) -> list[str]:
+    """v2.19：等級事件多了 PCN 類型，既有資料庫的 ck_event_type 檢查條件要放寬。
+
+    PostgreSQL 直接換掉檢查條件；SQLite 不能改檢查條件，以新的建表語法重建 fact_level_event 再搬資料。
+    """
+    from .models import EVENT_TYPES
+
+    if "fact_level_event" not in inspect(engine).get_table_names():
+        return []
+    allowed = ", ".join(f"'{t}'" for t in EVENT_TYPES)
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            current = conn.execute(
+                text(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conname = 'ck_event_type' AND conrelid = 'fact_level_event'::regclass"
+                )
+            ).scalar()
+            if current and "PCN" in current:
+                return []
+            conn.execute(text("ALTER TABLE fact_level_event DROP CONSTRAINT IF EXISTS ck_event_type"))
+            conn.execute(text(f"ALTER TABLE fact_level_event ADD CONSTRAINT ck_event_type CHECK (event_type IN ({allowed}))"))
+        return ["fact_level_event.ck_event_type 加入 PCN"]
+    if engine.dialect.name != "sqlite":  # pragma: no cover - 其他方言未支援
+        return []
+    with engine.begin() as conn:
+        sql = conn.execute(
+            text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fact_level_event'")
+        ).scalar()
+        if not sql or "'PCN'" in sql:
+            return []
+        new_sql, n = re.subn(r"event_type IN \([^)]*\)", f"event_type IN ({allowed})", sql, count=1)
+        if not n:
+            return []
+        indexes = [
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'fact_level_event' "
+                    "AND sql IS NOT NULL"
+                )
+            )
+        ]
+        columns = ", ".join(c["name"] for c in inspect(conn).get_columns("fact_level_event"))
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conn.execute(text("ALTER TABLE fact_level_event RENAME TO fact_level_event__old"))
+        conn.execute(text(new_sql))
+        conn.execute(text(f"INSERT INTO fact_level_event ({columns}) SELECT {columns} FROM fact_level_event__old"))
+        conn.execute(text("DROP TABLE fact_level_event__old"))
+        for index_sql in indexes:
+            conn.execute(text(index_sql))
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+    return ["fact_level_event 重建：事件類型加入 PCN"]
+
+
 DEFAULT_DATASET = ("WJ1", "DCS", "PM1")
 
 
@@ -259,6 +315,7 @@ def ensure_schema(engine: Engine) -> list[str]:
 
     # 必須在 fact_kpov 重建之後：重建用的是固定的舊欄位清單
     applied.extend(_add_missing_columns(engine))
+    applied.extend(_widen_event_types(engine))
     applied.extend(_backfill_dataset(engine))
 
     for action in applied:

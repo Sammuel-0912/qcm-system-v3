@@ -25,7 +25,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
-EVENT_TYPES = ("DEGRADE", "IMPROVE")
+# PCN（v2.19）：PCN 紀錄的「切入後」偵測度也計入等級，生效時間 = 切入時間
+EVENT_TYPES = ("DEGRADE", "IMPROVE", "PCN")
 TRANSITIONS = ("ESCALATED", "IMPROVED", "UNCHANGED")
 BATCH_STATUSES = ("pending", "success", "failed")
 

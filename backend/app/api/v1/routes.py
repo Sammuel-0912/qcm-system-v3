@@ -34,7 +34,7 @@ from ...models import (
     ImportBatch,
     User,
 )
-from ...services.measure_rows import events_by_repair, repair_row
+from ...services.measure_rows import events_by_repair, pcn_row, repair_row
 from ...importer.mapping import REPAIR_EIGHT_D_PREFIX as M_REPAIR_PREFIX
 from ...services.eight_d import eight_d_out
 from ...services.station_levels import event_levels, kpov_levels, station_order
@@ -315,15 +315,19 @@ def kpov_history(kpov_no: str, equipment_code: str, scope: Scope = Depends(curre
                 "repair": repair_detail(e),
             }
             for e in match.events
+            if e.event_type != "PCN"  # PCN 事件併在 changes 的 PCN 節點顯示（v2.19）
         ],
-        "changes": _change_records(session, batch.id, match.kpov),
+        "changes": _change_records(session, batch.id, match.kpov, match.events),
         "current": {"level": match.level_current},
         "target": {"level": match.level_target},
     }
 
 
-def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
-    """該 KPOV 的 PCN / ECN 變更紀錄，只供時間軸顯示，不影響等級計算。
+def _change_records(session: Session, batch_id: int, kpov, events=()) -> list[dict]:
+    """該 KPOV 的 PCN / ECN 變更紀錄（時間軸用）。
+
+    v2.19 起 PCN 的切入後偵測度計入等級：對應的等級事件（note = "PCN#<id>"）放在 counted，
+    帶出系統串接後的前後等級；ECN 仍只供顯示。
 
     PCN 以 (KPOV 編號, 設備ID) 對應，沒有設備ID 時以 (KPOV 編號, 站別)；ECN 若影響站別與設備ID 皆為 NA 視為全廠，
     否則依設備ID 或站別對應。
@@ -333,6 +337,7 @@ def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
         .where(FactChangeRecord.batch_id == batch_id)
         .order_by(FactChangeRecord.effective_at, FactChangeRecord.id)
     ).all()
+    counted = {e.note: e for e in events if e.event_type == "PCN" and e.note}
     out = []
     for r in records:
         if r.kind == "PCN":
@@ -367,9 +372,25 @@ def _change_records(session: Session, batch_id: int, kpov) -> list[dict]:
                 "smallYAfter": r.small_y_after,
                 "bigYAfter": r.big_y_after,
                 "levelAfter": r.level_after,
+                "counted": _counted_pcn(counted.get(f"PCN#{r.id}")),
             }
         )
     return out
+
+
+def _counted_pcn(event: FactLevelEvent | None) -> dict | None:
+    """PCN 計入等級後的結果：前 = 當時系統的等級（基準或之前的維修／PCN），後 = 切入後偵測度算出的等級。"""
+    if event is None:
+        return None
+    return {
+        "levelBefore": event.level_before,
+        "levelAfter": event.level_after,
+        "transition": event.transition,
+        "smallYBefore": event.small_y_score_before,
+        "bigYBefore": event.big_y_score_before,
+        "smallYAfter": event.small_y_score_after,
+        "bigYAfter": event.big_y_score_after,
+    }
 
 
 @router.get("/check-monitor")
@@ -530,9 +551,15 @@ def list_level_changes(
 
     items = []
     for e in page_items:
+        if e.event_type == "PCN":
+            row = pcn_row(e, states_by_key.get((e.kpov_no, e.equipment_code)), now=now)
+            row["transition"] = e.transition
+            row["effectiveAt"] = utc(e.effective_at).isoformat()
+            items.append(row)
+            continue
         repair = repairs.get(e.repair_id) if e.repair_id else None
         if repair is None:
-            continue  # 事件一律來自維修紀錄；找不到代表資料不一致，略過而不是組出半套的列
+            continue  # 維修事件找不到維修紀錄代表資料不一致，略過而不是組出半套的列
         row = repair_row(
             repair,
             states_by_key.get((e.kpov_no, e.equipment_code)),

@@ -93,6 +93,32 @@ def repair_row(
     }
 
 
+def pcn_row(event: FactLevelEvent, state: KpovState | None, *, now: dt.datetime) -> dict:
+    """等級異動總覽的 PCN 列（v2.19）：PCN 切入後偵測度計入等級產生的異動，沒有維修／客訴可開明細。"""
+    at = utc(event.effective_at)
+    return {
+        "station": state.kpov.station if state else None,
+        "kpovNo": event.kpov_no,
+        "kpovName": state.kpov.kpov_name if state else None,
+        "equipmentCode": event.equipment_code,
+        "mapped": state is not None,
+        "levelOrig": None,
+        "emergency": _measure(None, None),
+        "longTerm": _measure(event.improvement, event.effective_at),
+        "layer": {"summary": "PCN 變更"},
+        "levelChanged": _change(event, now),
+        "improvedAt": _iso(at),
+        "improvePlanned": bool(at and at > now),
+        "improveOverdue": False,
+        "complaintCount": 0,
+        "repairSerial": None,
+        "repairId": None,
+        "complaintId": None,
+        "occurredAt": _iso(at),
+        "source": "PCN",
+    }
+
+
 def layer_summary(record, prefix: str = "") -> str | None:
     """8D 區塊的管理解／技術解欄位 -> 「管理解／技術解・KPOV：設計消除、設備攔截；KPIV：防呆防錯」。
 
