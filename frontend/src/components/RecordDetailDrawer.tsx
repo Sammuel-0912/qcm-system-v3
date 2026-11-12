@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { api, type Complaint, type HistoryResponse, type RepairRecord } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
 import { formatLocalDateTime } from '../utils/datetime'
 import { EightDPanel } from './EightDPanel'
 import { LevelTimeline } from './LevelTimeline'
@@ -45,8 +46,19 @@ function Facts({ lines }: { lines: [string, string | number | null | undefined][
 /**
  * 措施表的列明細：「8D 明細」（緊急措施、長期措施、8D 四段）與「等級歷程」（KPOV 時間軸）兩個分頁。
  * 維修讀 GET /repairs/{id}，客訴讀 GET /complaints/{id}。
+ * 有傳 onDeleted 時，管理者在維修明細可刪除這筆紀錄（v2.20，刪除後後端重算等級）。
  */
-export function RecordDetailDrawer({ target, onClose }: { target: RecordTarget; onClose: () => void }) {
+export function RecordDetailDrawer({
+  target,
+  onClose,
+  onDeleted,
+}: {
+  target: RecordTarget
+  onClose: () => void
+  onDeleted?: (message: string) => void
+}) {
+  const { isAdmin } = useAuth()
+  const [deleting, setDeleting] = useState(false)
   const [tab, setTab] = useState<Tab>('detail')
   const [repair, setRepair] = useState<RepairRecord | null>(null)
   const [complaint, setComplaint] = useState<Complaint | null>(null)
@@ -77,6 +89,25 @@ export function RecordDetailDrawer({ target, onClose }: { target: RecordTarget; 
   }, [onClose])
 
   const loading = !error && !repair && !complaint
+
+  const removeRepair = async () => {
+    if (!repair || !onDeleted) return
+    const name = `序號 ${repair.serialNo ?? '（無序號）'} · ${repair.kpovNo} × ${repair.equipmentCode}`
+    const ok = window.confirm(
+      `確定刪除這筆維修紀錄？\n${name}\n\n刪除後會重新計算這個 KPOV 的等級，無法復原。` +
+        '\n若 Excel 修護報表仍有這一列，下次匯入會再加回來，請一併從 Excel 刪除。',
+    )
+    if (!ok) return
+    setDeleting(true)
+    try {
+      const res = await api.deleteRepair(repair.id)
+      const level = (v: number | null) => (v === null ? '—' : `Level ${v}`)
+      onDeleted(`已刪除維修紀錄（${name}），現況重算為 ${level(res.levelCurrent)}（基準 ${level(res.levelBaseline)}）`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '刪除失敗')
+      setDeleting(false)
+    }
+  }
   const heading = repair
     ? `維修 ${repair.serialNo ?? ''}`
     : complaint
@@ -151,6 +182,20 @@ export function RecordDetailDrawer({ target, onClose }: { target: RecordTarget; 
               <Measure title="長期措施（改善措施）" text={repair.improvement} at={repair.improvementAt} tone="text-slate-500" />
             </div>
             <EightDPanel data={repair.eightD} />
+            {isAdmin && onDeleted && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-red-200 bg-white p-3">
+                <p className="text-xs text-slate-500">
+                  刪除這筆維修紀錄並重算等級（管理者）。只從 Excel 刪列再匯入不會移除舊紀錄。
+                </p>
+                <button
+                  onClick={() => void removeRepair()}
+                  disabled={deleting}
+                  className="shrink-0 rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                >
+                  {deleting ? '刪除中…' : '刪除維修紀錄'}
+                </button>
+              </div>
+            )}
           </>
         ) : complaint ? (
           <>

@@ -332,3 +332,35 @@ def derive_level_events(
         )
 
     session.flush()
+
+
+def rederive_batch_events(session: Session, batch: ImportBatch, report, *, drop: FactRepair | None = None) -> int:
+    """刪除維修紀錄（v2.20，spec §26）：移除 drop 後，以批次中剩下的維修與 PCN 重新推導全部等級事件。
+
+    匯入時的 improve_time_fallback（修護報表沒有「改善時間」欄的舊檔）沒有存下來，由既有事件反推：
+    有 IMPROVE 事件的維修卻沒有改善時間，就是當時用了匯入時間代替。回傳重算後的事件數。
+    """
+    from ..models import DimDetectionMethod
+
+    events = session.scalars(select(FactLevelEvent).where(FactLevelEvent.batch_id == batch.id)).all()
+    repairs = list(
+        session.scalars(select(FactRepair).where(FactRepair.batch_id == batch.id).order_by(FactRepair.id))
+    )
+    by_id = {r.id: r for r in repairs}
+    fallback = any(
+        e.event_type == "IMPROVE" and e.repair_id in by_id and by_id[e.repair_id].improvement_effective_at is None
+        for e in events
+    )
+    for event in events:
+        session.delete(event)
+    session.flush()  # 事件參照維修，先刪事件再刪維修
+    if drop is not None:
+        session.delete(drop)
+        session.flush()
+        repairs = [r for r in repairs if r.id != drop.id]
+    method_scores = {
+        m.method_name: m.score
+        for m in session.scalars(select(DimDetectionMethod).where(DimDetectionMethod.batch_id == batch.id))
+    }
+    derive_level_events(session, batch, repairs, method_scores, report, improve_time_fallback=fallback)
+    return len(report.level_events)

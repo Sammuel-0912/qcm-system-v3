@@ -23,6 +23,8 @@ export default function ProcessPage() {
   const [data, setData] = useState<FilteredPaged<RepairRow> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordTarget | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
     api
@@ -32,7 +34,7 @@ export default function ProcessPage() {
         setError(null)
       })
       .catch((err) => setError(err instanceof Error ? err.message : '載入失敗'))
-  }, [filter, page])
+  }, [filter, page, reload])
 
   const changeFilter = (next: ListFilter) => {
     setFilter(next)
@@ -58,6 +60,14 @@ export default function ProcessPage() {
         )}
         <ListFilterBar value={filter} onChange={changeFilter} options={data?.options} occurredLabel="測試時間" groupLabel="機種" />
         {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+        {notice && (
+          <div className="flex items-start justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800" role="status">
+            <span>{notice}</span>
+            <button onClick={() => setNotice(null)} className="text-emerald-600 hover:text-emerald-900" aria-label="關閉提示">
+              ✕
+            </button>
+          </div>
+        )}
 
         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
           <table className="w-full text-left text-sm">
@@ -124,7 +134,17 @@ export default function ProcessPage() {
         </div>
         {data && data.total > 0 && <Pager data={data} onPageChange={setPage} />}
       </main>
-      {detail && <RecordDetailDrawer target={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <RecordDetailDrawer
+          target={detail}
+          onClose={() => setDetail(null)}
+          onDeleted={(message) => {
+            setDetail(null)
+            setNotice(message)
+            setReload((n) => n + 1)
+          }}
+        />
+      )}
     </AppShell>
   )
 }

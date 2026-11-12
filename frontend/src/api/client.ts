@@ -696,6 +696,13 @@ export const api = {
   repairs: (f: ListFilter, page: number) => get<FilteredPaged<RepairRow>>('/repairs', listParams(f, page)),
   /** 單筆維修／客訴明細（含 8D） */
   repair: (id: number) => get<RepairRecord>(`/repairs/${id}`),
+  /** 刪除維修紀錄並重算等級（管理者，v2.20） */
+  deleteRepair: (id: number) =>
+    send<{
+      deleted: { serialNo: string | null; kpovNo: string; equipmentCode: string }
+      levelBaseline: number | null
+      levelCurrent: number | null
+    }>('DELETE', `/repairs/${id}`, undefined, '刪除失敗'),
   complaint: (id: number) => get<Complaint>(`/complaints/${id}`),
   stationRisk: (window: ChangeWindow) =>
     get<{

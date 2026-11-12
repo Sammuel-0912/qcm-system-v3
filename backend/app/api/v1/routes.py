@@ -21,7 +21,8 @@ from ...services.storage import url_for as storage_url_for
 from ...db import get_session
 from ..deps import Scope, current_scope, current_user, require_admin, require_super
 from ...services.auth import can_import, can_view_plant, parse_dataset_filename
-from ...importer.excel import ImportError_, import_workbook
+from ...importer.excel import ImportError_, ImportReport, import_workbook
+from ...importer.level_events import rederive_batch_events
 from ...models import (
     CheckCountImport,
     CheckPhotoInspection,
@@ -1062,6 +1063,50 @@ def get_repair(repair_id: int, scope: Scope = Depends(current_scope),
         "improvement": r.improvement,
         "improvementAt": _iso_utc(r.improvement_effective_at),
         "eightD": eight_d_out(r, M_REPAIR_PREFIX),
+    }
+
+
+@router.delete("/repairs/{repair_id}")
+def delete_repair(repair_id: int, scope: Scope = Depends(current_scope),
+    session: Session = Depends(get_session)):
+    """刪除一筆維修紀錄並重算等級（v2.20，spec §26）。只有可匯入這個廠的管理者能刪。
+
+    維修紀錄跨批次累積（REQ-IMP-11），在 Excel 刪列再匯入不會移除舊紀錄，要從這裡刪。
+    刪除只作用在目前生效批次；之後的匯入以這個批次為基礎合併，所以不會再沿用回來
+    （除非新檔案裡仍有這一列）。
+    """
+    actor, batch = scope.user, scope.batch
+    if not can_import(actor.role, actor.plant, batch.plant or ""):
+        raise HTTPException(status_code=403, detail="只有管理者可以刪除維修紀錄")
+    r = session.get(FactRepair, repair_id)
+    if r is None or r.batch_id != batch.id:
+        raise HTTPException(status_code=404, detail="找不到這筆維修紀錄，請重新整理後再試")
+    key = (r.kpov_no, r.equipment_code)
+    info = {"serialNo": r.serial_no, "kpovNo": r.kpov_no, "equipmentCode": r.equipment_code}
+
+    report = ImportReport()
+    total = rederive_batch_events(session, batch, report, drop=r)
+
+    counts = dict(batch.row_counts or {})
+    counts["repairs"] = max(0, int(counts.get("repairs", 1)) - 1)
+    counts["levelEvents"] = total
+    batch.row_counts = counts
+    log = dict(batch.error_log or {})
+    log["levelEventSummary"] = report.as_dict()["levelEventSummary"]
+    log["repairDeletions"] = [
+        *log.get("repairDeletions", []),
+        {**info, "by": actor.username, "at": dt.datetime.now(dt.timezone.utc).isoformat()},
+    ]
+    batch.error_log = log
+    session.commit()
+
+    state = next(
+        (s for s in build_states(session, batch.id) if (s.kpov.kpov_no, s.kpov.equipment_code) == key), None
+    )
+    return {
+        "deleted": info,
+        "levelBaseline": state.level_baseline if state else None,
+        "levelCurrent": state.level_current if state else None,
     }
 
 
