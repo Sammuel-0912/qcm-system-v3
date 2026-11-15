@@ -11,7 +11,9 @@ type Props = {
   selected: string | null
   onSelect: (targetId: string | null) => void
   reloadKey?: number
-  /** 「站別 Level 分佈」的各站 KPOV 個數（依設備代碼），決定卡片顏色 */
+  /** 顏色依據的說明（基準／現況，跟著「站別 Level 分佈」的切換） */
+  levelBasis?: string
+  /** 「站別 Level 分佈」目前檢視的各站 KPOV 個數（依設備代碼），決定卡片顏色 */
   kpovLevels: Record<string, StationLevelCounts> | null
 }
 
@@ -32,10 +34,11 @@ type Risk = Awaited<ReturnType<typeof api.stationRisk>>
 
 /**
  * 站別風險地圖：每站一張卡片，底色＝上方「站別 Level 分佈」該站出現過的最高 Level（v2.15；例：鎖 Fuse 有 Level 3 的 KPOV 就是 L3 色），
+ * 跟著上方的「基準／現況」切換（v2.22，spec §28），兩邊永遠一致；
  * 與象限圖同一套 Level 顏色；該站沒有 KPOV 時為白色。期間內的維修／客訴次數仍以標籤顯示。
  * 點卡片等同點 Layout 熱區（下方趨勢與點檢表切到該站），再點取消。
  */
-export function StationRiskMap({ window, selected, onSelect, reloadKey, kpovLevels }: Props) {
+export function StationRiskMap({ window, selected, onSelect, reloadKey, levelBasis, kpovLevels }: Props) {
   const [risk, setRisk] = useState<Risk | null>(null)
 
   useEffect(() => {
@@ -55,6 +58,7 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey, kpovLeve
       <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h3 className="text-base font-semibold text-slate-800">站別風險地圖</h3>
         <span className="text-sm text-slate-500">
+          {levelBasis && `${levelBasis}・`}
           {WINDOW_HINT[window]}・{risk ? `${alerted} / ${RISK_STATIONS.length} 站有預警` : '載入中…'}
         </span>
         {risk && risk.unmappedComplaints > 0 && (

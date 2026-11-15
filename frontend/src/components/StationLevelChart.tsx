@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Bar, BarChart, CartesianGrid, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
 import type { StationLevelCounts, StationRef } from '../api/client'
@@ -14,6 +15,8 @@ type Props = {
   emptyText?: string
   /** 總數的單位，例：筆、個 KPOV */
   unit?: string
+  /** 標題列右側的操作（例：檢視切換） */
+  actions?: ReactNode
 }
 
 // 與象限圖同色；柱子再加深色描邊，淺色底上才看得清楚
@@ -49,7 +52,7 @@ function StationTick({ x, y, payload }: { x?: number; y?: number; payload?: { va
 }
 
 /** 站別 × Level 柱狀圖：每站四根柱子（Level 0～3），顏色對應四象限。 */
-export function StationLevelChart({ title, caption, stations, note, emptyText = '沒有資料', unit = '筆' }: Props) {
+export function StationLevelChart({ title, caption, stations, note, emptyText = '沒有資料', unit = '筆', actions }: Props) {
   const rows = (stations ?? []).map((s) => ({
     name: DISPLAY_NAMES[s.equipmentCode] ?? s.station,
     ...Object.fromEntries(LEVELS.map((l) => [`L${l}`, s.counts[String(l)] ?? 0])),
@@ -62,6 +65,7 @@ export function StationLevelChart({ title, caption, stations, note, emptyText = 
         <h3 className="text-base font-semibold text-slate-800">{title}</h3>
         {caption && <span className="text-sm text-slate-500">{caption}</span>}
         {stations && <span className="text-xs text-slate-400">共 {total} {unit}</span>}
+        {actions && <div className="ml-auto">{actions}</div>}
       </div>
       {!stations ? (
         <p className="py-8 text-center text-sm text-slate-400">載入中…</p>

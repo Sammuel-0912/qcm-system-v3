@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
+from collections import Counter
 
 import openpyxl
 
@@ -56,8 +58,17 @@ def test_delete_repair_recomputes_levels(app_ctx):
     raw = V1026.read_bytes()
     _import(su, raw, PM1)
     before = _repairs(su, PM1)
-    # 挑一筆讓現況和基準不同的維修（刪掉後等級應該會變）
-    target = next(r for r in before if r["serialNo"] and r["levelAfter"] is not None and r["levelAfter"] != r["levelBefore"])
+    # 挑一筆刪掉後等級一定會變的維修：該 KPOV 只有這一筆維修、它改變了等級，而且改善（若有）已經生效。
+    # 不能只挑「等級有變」的：同一 KPOV 有多筆同方向的維修時，刪一筆結果一樣；
+    # 改善時間還沒到的那筆也一樣（舊版測試因此在 2026-11-14 之後失敗）
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    per_key = Counter((r["kpovNo"], r["equipmentCode"]) for r in before)
+    target = next(
+        r for r in before
+        if r["serialNo"] and per_key[(r["kpovNo"], r["equipmentCode"])] == 1
+        and r["levelAfter"] is not None and r["levelAfter"] != r["levelBefore"]
+        and (r["improvedAt"] is None or r["improvedAt"] <= now)
+    )
     key = (target["kpovNo"], target["equipmentCode"])
 
     # 一般使用者不能刪；別的批次／不存在的 id 回 404

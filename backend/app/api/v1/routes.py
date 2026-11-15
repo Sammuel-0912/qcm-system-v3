@@ -739,9 +739,9 @@ def get_station_risk(
 @router.get("/station-levels/kpov")
 def get_station_kpov_levels(scope: Scope = Depends(current_scope),
     session: Session = Depends(get_session)):
-    """站別柱狀圖（layout 下方）：各站 KPOV 個數，依 KPOV 數據庫原始 Level。全線一覽，不套用篩選與期間。"""
+    """站別 Level 分佈＋站別風險地圖：各站 KPOV 個數，含基準（counts）與現況（current）。全線一覽，不套用篩選與期間。"""
     batch = scope.batch
-    return kpov_levels(session, batch.id)
+    return kpov_levels(session, batch.id, build_states(session, batch.id))
 
 
 @router.get("/station-levels/events")

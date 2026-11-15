@@ -401,7 +401,8 @@ def test_photo_inspection_dashboard(client):
     assert exported.status_code == 200
     assert openpyxl.load_workbook(io.BytesIO(exported.content)).active.max_row >= 2
 
-    stats = client.get("/api/v1/check-inspections/stats").json()
+    # 點檢是「現在」建立的；週日（不生產）跑測試時預設會被排除，所以關掉排除
+    stats = client.get("/api/v1/check-inspections/stats", params={"excludeOffDays": "false"}).json()
     assert stats == [
         {
             "equipmentCode": item["equipmentCode"],
@@ -841,7 +842,7 @@ def test_dashboard_hides_records_of_retired_items(client):
         s.commit()
     listed = client.get("/api/v1/check-inspections").json()
     assert listed["total"] == 1 and listed["items"][0]["checkContent"] == item["checkContent"]
-    assert sum(r["total"] for r in client.get("/api/v1/check-inspections/stats").json()) == 1
+    assert sum(r["total"] for r in client.get("/api/v1/check-inspections/stats", params={"excludeOffDays": "false"}).json()) == 1
 
 
 @pytest.mark.skipif(not DATA.exists(), reason="數據庫-1019.xlsx 不存在")

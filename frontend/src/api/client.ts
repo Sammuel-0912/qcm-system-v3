@@ -714,14 +714,19 @@ export const api = {
     }>('/station-risk', { window }),
   /** 各站 KPOV 個數（KPOV 數據庫原始 Level），站別依製程順序 */
   stationKpovLevels: () =>
-    get<{ stations: (StationRef & { counts: StationLevelCounts })[]; unrated: number }>('/station-levels/kpov'),
+    get<{
+      stations: (StationRef & { counts: StationLevelCounts; current: StationLevelCounts })[]
+      unrated: number
+      unratedCurrent: number
+    }>('/station-levels/kpov'),
   /** 期間內各站客訴／維修筆數，依發生當時的 Level */
   stationEventLevels: (p: Scope & { window: ChangeWindow }) =>
     get<{
       window: ChangeWindow
-      stations: (StationRef & { complaints: StationLevelCounts; repairs: StationLevelCounts })[]
+      /** current：篩選範圍內 KPOV 的現況 Level 項數（不分期間，與四象限一致，v2.21） */
+      stations: (StationRef & { complaints: StationLevelCounts; repairs: StationLevelCounts; current: StationLevelCounts })[]
       unmappedComplaints: number
-      unknownLevel: { complaints: number; repairs: number }
+      unknownLevel: { complaints: number; repairs: number; current: number }
     }>('/station-levels/events', p),
   levelChanges: (p: Scope & { window: ChangeWindow; kind: ChangeKind; page: number }) =>
     get<LevelChangesResponse>('/level-changes', { ...p, page: String(p.page) }),

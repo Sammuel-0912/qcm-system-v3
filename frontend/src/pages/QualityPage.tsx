@@ -136,6 +136,32 @@ export default function QualityPage() {
   }, [station, line, attribute, changeWindow])
 
   // 左半邊：客訴（客訴報表）與製程（修護報表）站別柱狀圖，吃上方篩選器與期間
+  // 製程柱狀圖：發生當時（維修筆數）／現況（KPOV 項數，與四象限一致）（v2.21）
+  const [processView, setProcessView] = useState<'event' | 'current'>('event')
+  // 站別 Level 分佈＋站別風險地圖共用：基準（KPOV 數據庫原始 Level）／現況（與四象限一致）（v2.22）
+  const [kpovView, setKpovView] = useState<'baseline' | 'current'>('baseline')
+  const processToggle = (
+    <SegmentedToggle
+      label="製程柱狀圖檢視"
+      value={processView}
+      onChange={setProcessView}
+      options={[
+        ['event', '發生當時（維修筆數）'],
+        ['current', '現況（KPOV 項數）'],
+      ]}
+    />
+  )
+  const kpovToggle = (
+    <SegmentedToggle
+      label="站別 Level 分佈與風險地圖檢視"
+      value={kpovView}
+      onChange={setKpovView}
+      options={[
+        ['baseline', '基準'],
+        ['current', '現況'],
+      ]}
+    />
+  )
   const [stationEvents, setStationEvents] = useState<Awaited<ReturnType<typeof api.stationEventLevels>> | null>(null)
   // layout 下方：各站 KPOV 原始 Level 分佈，全線一覽，不吃篩選與期間
   const [stationKpov, setStationKpov] = useState<Awaited<ReturnType<typeof api.stationKpovLevels>> | null>(null)
@@ -397,13 +423,30 @@ export default function QualityPage() {
               </div>
 
               <div className="mt-5 border-t border-slate-100 pt-4">
-                <StationLevelChart
-                  title="製程柱狀圖"
-                  caption={`${windowHint}・修護報表・依惡化後 Level`}
-                  stations={stationEvents?.stations.map((s) => ({ ...s, counts: s.repairs })) ?? null}
-                  emptyText={`${windowHint}沒有維修紀錄`}
-                  note={eventNote(0, stationEvents?.unknownLevel.repairs ?? 0, '維修')}
-                />
+                {processView === 'event' ? (
+                  <StationLevelChart
+                    title="製程柱狀圖"
+                    caption={`${windowHint}・修護報表・依惡化後 Level`}
+                    stations={stationEvents?.stations.map((s) => ({ ...s, counts: s.repairs })) ?? null}
+                    emptyText={`${windowHint}沒有維修紀錄`}
+                    note={eventNote(0, stationEvents?.unknownLevel.repairs ?? 0, '維修')}
+                    actions={processToggle}
+                  />
+                ) : (
+                  <StationLevelChart
+                    title="製程柱狀圖"
+                    caption="全部 KPOV・現況 Level（與四象限一致）・不分期間"
+                    stations={stationEvents?.stations.map((s) => ({ ...s, counts: s.current })) ?? null}
+                    emptyText="篩選範圍內沒有 KPOV"
+                    unit="項 KPOV"
+                    note={
+                      stationEvents?.unknownLevel.current
+                        ? `另有 ${stationEvents.unknownLevel.current} 項 KPOV 算不出現況 Level，未畫入圖中`
+                        : undefined
+                    }
+                    actions={processToggle}
+                  />
+                )}
               </div>
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -430,10 +473,20 @@ export default function QualityPage() {
           <div>
             <StationLevelChart
               title="站別 Level 分佈"
-              caption="各站 KPOV 個數・KPOV 數據庫原始 Level"
-              stations={stationKpov?.stations ?? null}
+              caption={
+                kpovView === 'baseline'
+                  ? '各站 KPOV 個數・KPOV 數據庫原始 Level'
+                  : '各站 KPOV 個數・現況 Level（含改善、PCN，與四象限一致）'
+              }
+              stations={stationKpov?.stations.map((s) => ({ ...s, counts: kpovView === 'baseline' ? s.counts : s.current })) ?? null}
               emptyText="尚無 KPOV 資料"
               unit="個 KPOV"
+              note={
+                kpovView === 'current' && stationKpov?.unratedCurrent
+                  ? `另有 ${stationKpov.unratedCurrent} 個 KPOV 算不出現況 Level，未畫入圖中`
+                  : undefined
+              }
+              actions={kpovToggle}
             />
           </div>
           <StationRiskMap
@@ -441,7 +494,14 @@ export default function QualityPage() {
             selected={state.target}
             onSelect={(target) => setState((s) => ({ ...s, target }))}
             reloadKey={reloadKey}
-            kpovLevels={stationKpov ? Object.fromEntries(stationKpov.stations.map((s) => [s.equipmentCode, s.counts])) : null}
+            levelBasis={kpovView === 'baseline' ? '底色依基準 Level' : '底色依現況 Level'}
+            kpovLevels={
+              stationKpov
+                ? Object.fromEntries(
+                    stationKpov.stations.map((s) => [s.equipmentCode, kpovView === 'baseline' ? s.counts : s.current]),
+                  )
+                : null
+            }
           />
         </section>
 
@@ -515,5 +575,36 @@ export default function QualityPage() {
         <ImportDialog onClose={closeImport} />
       )}
     </AppShell>
+  )
+}
+
+/** 分段切換鈕（製程柱狀圖、站別 Level 分佈共用同一種樣式） */
+function SegmentedToggle<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: T
+  onChange: (value: T) => void
+  options: readonly (readonly [T, string])[]
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-slate-200 p-0.5 text-xs" role="group" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={value === v}
+          onClick={() => onChange(v)}
+          className={`rounded px-2 py-1 transition ${
+            value === v ? 'bg-[#0086DB] font-semibold text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
   )
 }

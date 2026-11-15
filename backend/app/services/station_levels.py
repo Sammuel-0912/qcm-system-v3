@@ -31,9 +31,13 @@ def station_order(session: Session, batch_id: int) -> list[tuple[str, str]]:
     return list(seen.items())
 
 
-def kpov_levels(session: Session, batch_id: int) -> dict:
-    """各站 KPOV 個數，依 KPOV 數據庫的原始 Level（不套用維修／改善，不分期間）。"""
-    stations = {code: {"equipmentCode": code, "station": name, "counts": _empty()}
+def kpov_levels(session: Session, batch_id: int, states: list[KpovState]) -> dict:
+    """各站 KPOV 個數（全線一覽，不套用篩選與期間）。
+
+    counts：KPOV 數據庫的原始（基準）Level，不套用維修／改善／PCN。
+    current：現況 Level（v2.22，spec §28），與四象限 view=current 同一套算法。
+    """
+    stations = {code: {"equipmentCode": code, "station": name, "counts": _empty(), "current": _empty()}
                 for code, name in station_order(session, batch_id)}
     unrated = 0
     for code, level in session.execute(
@@ -45,7 +49,16 @@ def kpov_levels(session: Session, batch_id: int) -> dict:
             unrated += 1
         else:
             stations[code]["counts"][str(level)] += 1
-    return {"stations": list(stations.values()), "unrated": unrated}
+    unrated_current = 0
+    for state in states:
+        code = state.kpov.equipment_code
+        if code not in stations:
+            continue
+        if state.level_current is None:
+            unrated_current += 1
+        else:
+            stations[code]["current"][str(state.level_current)] += 1
+    return {"stations": list(stations.values()), "unrated": unrated, "unratedCurrent": unrated_current}
 
 
 def event_levels(session: Session, batch_id: int, window: str, scoped: list[KpovState]) -> dict:
@@ -54,16 +67,19 @@ def event_levels(session: Session, batch_id: int, window: str, scoped: list[Kpov
     客訴依客訴日期、取改善前 Level；維修依測試時間、取該筆惡化事件後的 Level。
     只計入篩選範圍（線別／屬性／站別）內的設備；客訴未填設備ID 者另計 unmappedComplaints，
     算不出 Level 者另計 unknownLevel。
+
+    v2.21（spec §27）：每站另回 current＝篩選範圍內各 KPOV 的「現況」Level 項數（不分期間），
+    與四象限同一組 KPOV，所以各站加總＋unknownLevel.current＝四象限 scope.total。
     """
     bounds = window_bounds(window)
     allowed = {s.kpov.equipment_code for s in scoped if s.kpov.equipment_code}
     stations = {
-        code: {"equipmentCode": code, "station": name, "complaints": _empty(), "repairs": _empty()}
+        code: {"equipmentCode": code, "station": name, "complaints": _empty(), "repairs": _empty(), "current": _empty()}
         for code, name in station_order(session, batch_id)
         if code in allowed
     }
     unmapped = 0
-    unknown = {"complaints": 0, "repairs": 0}
+    unknown = {"complaints": 0, "repairs": 0, "current": 0}
 
     def record(code: str | None, kind: str, level: int | None) -> None:
         if code not in stations:
@@ -90,6 +106,14 @@ def event_levels(session: Session, batch_id: int, window: str, scoped: list[Kpov
         if in_bounds(repair.tested_at, bounds):
             degrade = events.get(repair.id, {}).get("DEGRADE")
             record(repair.equipment_code, "repairs", degrade.level_after if degrade else None)
+
+    for state in scoped:
+        code = state.kpov.equipment_code
+        level = state.level_current
+        if code in stations and level is not None:
+            stations[code]["current"][str(level)] += 1
+        else:
+            unknown["current"] += 1  # 現況算不出 Level，或 KPOV 沒有設備代碼歸不到站
 
     return {
         "window": window,
