@@ -17,7 +17,7 @@ import {
   type QuadrantResponse,
   type TrendResponse,
 } from '../api/client'
-import { HOTSPOTS } from '../layoutConfig'
+import { HOTSPOTS, orderStations } from '../layoutConfig'
 import { BroadcastBar } from '../components/BroadcastBar'
 import { CheckMonitorTable } from '../components/CheckMonitorTable'
 import { DeviationPanel } from '../components/DeviationPanel'
@@ -495,6 +495,7 @@ export default function QualityPage() {
             onSelect={(target) => setState((s) => ({ ...s, target }))}
             reloadKey={reloadKey}
             levelBasis={kpovView === 'baseline' ? '底色依基準 Level' : '底色依現況 Level'}
+            order={stationKpov ? orderStations(stationKpov.stations).map((s) => s.equipmentCode) : undefined}
             kpovLevels={
               stationKpov
                 ? Object.fromEntries(

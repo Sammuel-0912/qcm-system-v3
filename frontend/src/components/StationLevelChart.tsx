@@ -3,7 +3,7 @@ import { Bar, BarChart, CartesianGrid, LabelList, Legend, ResponsiveContainer, T
 
 import type { StationLevelCounts, StationRef } from '../api/client'
 import { LEVEL_COLORS } from '../constants'
-import { RISK_STATIONS } from '../layoutConfig'
+import { RISK_STATIONS, orderStations } from '../layoutConfig'
 
 type Props = {
   title: string
@@ -53,7 +53,7 @@ function StationTick({ x, y, payload }: { x?: number; y?: number; payload?: { va
 
 /** 站別 × Level 柱狀圖：每站四根柱子（Level 0～3），顏色對應四象限。 */
 export function StationLevelChart({ title, caption, stations, note, emptyText = '沒有資料', unit = '筆', actions }: Props) {
-  const rows = (stations ?? []).map((s) => ({
+  const rows = orderStations(stations ?? []).map((s) => ({
     name: DISPLAY_NAMES[s.equipmentCode] ?? s.station,
     ...Object.fromEntries(LEVELS.map((l) => [`L${l}`, s.counts[String(l)] ?? 0])),
   }))

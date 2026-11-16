@@ -15,6 +15,8 @@ type Props = {
   levelBasis?: string
   /** 「站別 Level 分佈」目前檢視的各站 KPOV 個數（依設備代碼），決定卡片顏色 */
   kpovLevels: Record<string, StationLevelCounts> | null
+  /** 卡片順序：上方柱狀圖 X 軸由左而右的設備代碼；不在其中的站排在最後（維持原順序） */
+  order?: string[]
 }
 
 /** 該站 KPOV 出現過的最高 Level；沒有 KPOV 時為 null */
@@ -38,8 +40,14 @@ type Risk = Awaited<ReturnType<typeof api.stationRisk>>
  * 與象限圖同一套 Level 顏色；該站沒有 KPOV 時為白色。期間內的維修／客訴次數仍以標籤顯示。
  * 點卡片等同點 Layout 熱區（下方趨勢與點檢表切到該站），再點取消。
  */
-export function StationRiskMap({ window, selected, onSelect, reloadKey, levelBasis, kpovLevels }: Props) {
+export function StationRiskMap({ window, selected, onSelect, reloadKey, levelBasis, kpovLevels, order }: Props) {
   const [risk, setRisk] = useState<Risk | null>(null)
+  const rank = (code: string) => {
+    const i = order?.indexOf(code) ?? -1
+    return i < 0 ? Number.MAX_SAFE_INTEGER : i
+  }
+  // sort 是穩定排序：不在柱狀圖裡的站維持 RISK_STATIONS 原本的相對順序
+  const stations = [...RISK_STATIONS].sort((a, b) => rank(a.equipmentCode) - rank(b.equipmentCode))
 
   useEffect(() => {
     api
@@ -69,7 +77,7 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey, levelBas
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        {RISK_STATIONS.map((station) => {
+        {stations.map((station) => {
           const counts = risk?.stations[station.equipmentCode] ?? { repairs: 0, complaints: 0, worstLevel: null }
           const alert = counts.repairs > 0 || counts.complaints > 0
           const level = highestLevel(kpovLevels?.[station.equipmentCode])
@@ -102,12 +110,12 @@ export function StationRiskMap({ window, selected, onSelect, reloadKey, levelBas
               </span>
               <span className="mt-2 flex flex-wrap gap-1">
                 {counts.repairs > 0 && (
-                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-800 ring-1 ring-inset ring-black/10">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-semibold text-red-600 ring-1 ring-inset ring-red-200">
                     維修 {counts.repairs}
                   </span>
                 )}
                 {counts.complaints > 0 && (
-                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-medium text-slate-800 ring-1 ring-inset ring-black/10">
+                  <span className="rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-semibold text-red-600 ring-1 ring-inset ring-red-200">
                     客訴 {counts.complaints}
                   </span>
                 )}

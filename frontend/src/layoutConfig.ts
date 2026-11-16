@@ -174,3 +174,24 @@ export const RISK_STATIONS: RiskStation[] = [
   // 尚未放上熱區的都是 OP 人工站（A000N）
   ...UNPLACED_TARGETS.map((t) => ({ targetId: t.targetId, displayName: t.displayName, kind: 'OP' as const })),
 ].map((s) => ({ ...s, equipmentCode: s.targetId.replace(/^equip:/, '') }))
+
+/**
+ * 站別柱狀圖的站序微調（v2.23，使用者 2026-11-16）：預設依 KPOV 數據庫的列序（製程順序），
+ * 但下列兩組要依現場順序對調——鎖銅排1 在鎖銅排2 前面、鎖Fuse 在鎖銅排3 前面。
+ * 每組是「目前順序中兩站的設備代碼」，兩站都出現時互換位置；站別風險地圖也跟著柱狀圖 X 軸的順序排。
+ */
+export const STATION_ORDER_SWAPS: [string, string][] = [
+  ['OT00420104', 'OT00420118'], // 鎖銅排2 ↔ 鎖銅排1
+  ['OT00420105', 'OT00420108'], // 鎖銅排3 ↔ 鎖Fuse
+]
+
+/** 依 STATION_ORDER_SWAPS 對調站序（不改變其他站的相對順序） */
+export function orderStations<T extends { equipmentCode: string }>(stations: T[]): T[] {
+  const out = [...stations]
+  for (const [a, b] of STATION_ORDER_SWAPS) {
+    const i = out.findIndex((s) => s.equipmentCode === a)
+    const j = out.findIndex((s) => s.equipmentCode === b)
+    if (i >= 0 && j >= 0) [out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
