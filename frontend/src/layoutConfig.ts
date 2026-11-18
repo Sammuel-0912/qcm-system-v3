@@ -52,7 +52,7 @@ export const HOTSPOTS: Hotspot[] = [
   },
   {
     targetId: 'equip:OT00420110',
-    displayName: '鎖PWB板機2',
+    displayName: '鎖螺柱',
     kpovStation: '鎖螺柱',
     kind: 'CTP',
     rect: { x: 19.99, y: 24.38, w: 3.19, h: 4.02 },
@@ -61,7 +61,7 @@ export const HOTSPOTS: Hotspot[] = [
   },
   {
     targetId: 'equip:OT00420118',
-    displayName: '鎖銅排1',
+    displayName: '鎖電感',
     kpovStation: '鎖銅排',
     kind: 'CTP',
     rect: { x: 23.44, y: 24.38, w: 6.54, h: 4.02 },
@@ -70,7 +70,7 @@ export const HOTSPOTS: Hotspot[] = [
   },
   {
     targetId: 'equip:OT00420104',
-    displayName: '鎖銅排2',
+    displayName: '鎖銅排',
     kpovStation: '鎖電感',
     kind: 'CTP',
     rect: { x: 30.09, y: 24.38, w: 6.62, h: 4.02 },
@@ -79,7 +79,7 @@ export const HOTSPOTS: Hotspot[] = [
   },
   {
     targetId: 'equip:OT00420105',
-    displayName: '鎖銅排3',
+    displayName: '鎖保險絲',
     kpovStation: '鎖保險絲',
     kind: 'CTP',
     rect: { x: 40.21, y: 24.38, w: 4.29, h: 4.02 },
@@ -88,7 +88,7 @@ export const HOTSPOTS: Hotspot[] = [
   },
   {
     targetId: 'equip:OT00420108',
-    displayName: '鎖Fuse',
+    displayName: '鎖軟銅排2',
     kpovStation: '鎖軟銅排',
     kind: 'CTP',
     rect: { x: 33.88, y: 55.18, w: 5.39, h: 4.82 },
@@ -177,12 +177,12 @@ export const RISK_STATIONS: RiskStation[] = [
 
 /**
  * 站別柱狀圖的站序微調（v2.23，使用者 2026-11-16）：預設依 KPOV 數據庫的列序（製程順序），
- * 但下列兩組要依現場順序對調——鎖銅排1 在鎖銅排2 前面、鎖Fuse 在鎖銅排3 前面。
+ * 但下列要依現場順序對調——OT00420118 在 OT00420104 前面（v2.24 起，OT00420105 鎖保險絲／
+ * OT00420108 鎖軟銅排2 不再對調，回到數據庫列序：鎖保險絲在前）。
  * 每組是「目前順序中兩站的設備代碼」，兩站都出現時互換位置；站別風險地圖也跟著柱狀圖 X 軸的順序排。
  */
 export const STATION_ORDER_SWAPS: [string, string][] = [
-  ['OT00420104', 'OT00420118'], // 鎖銅排2 ↔ 鎖銅排1
-  ['OT00420105', 'OT00420108'], // 鎖銅排3 ↔ 鎖Fuse
+  ['OT00420104', 'OT00420118'], // 鎖銅排 ↔ 鎖電感
 ]
 
 /** 依 STATION_ORDER_SWAPS 對調站序（不改變其他站的相對順序） */
